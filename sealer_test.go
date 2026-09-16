@@ -1,14 +1,14 @@
-package vouch_test
+package social_test
 
 import (
 	"errors"
 	"testing"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 )
 
 func TestAESSealerRoundTrips(t *testing.T) {
-	sealer, err := vouch.AESSealer([]byte("0123456789abcdef0123456789abcdef"))
+	sealer, err := social.AESSealer([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,8 +30,8 @@ func TestAESSealerRoundTrips(t *testing.T) {
 }
 
 func TestAESSealerRejectsTamperingAndOtherKeys(t *testing.T) {
-	sealer, _ := vouch.AESSealer([]byte("0123456789abcdef0123456789abcdef"))
-	other, _ := vouch.AESSealer([]byte("fedcba9876543210fedcba9876543210"))
+	sealer, _ := social.AESSealer([]byte("0123456789abcdef0123456789abcdef"))
+	other, _ := social.AESSealer([]byte("fedcba9876543210fedcba9876543210"))
 
 	sealed, _ := sealer.Seal([]byte("secret"))
 
@@ -41,17 +41,17 @@ func TestAESSealerRejectsTamperingAndOtherKeys(t *testing.T) {
 		"garbage":   "not base64 at all!",
 		"empty":     "",
 	} {
-		if _, err := sealer.Open(value); !errors.Is(err, vouch.ErrSealed) {
+		if _, err := sealer.Open(value); !errors.Is(err, social.ErrSealed) {
 			t.Errorf("%s: expected ErrSealed, got %v", name, err)
 		}
 	}
-	if _, err := other.Open(sealed); !errors.Is(err, vouch.ErrSealed) {
+	if _, err := other.Open(sealed); !errors.Is(err, social.ErrSealed) {
 		t.Errorf("another key: expected ErrSealed, got %v", err)
 	}
 }
 
 func TestAESSealerNeedsAValidKey(t *testing.T) {
-	if _, err := vouch.AESSealer([]byte("short")); err == nil {
+	if _, err := social.AESSealer([]byte("short")); err == nil {
 		t.Fatal("a five byte key should be refused")
 	}
 }

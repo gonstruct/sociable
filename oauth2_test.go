@@ -1,4 +1,4 @@
-package vouch_test
+package social_test
 
 import (
 	"encoding/json"
@@ -6,12 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 	"golang.org/x/oauth2"
 )
 
 func TestOAuth2ProviderFromEndpoints(t *testing.T) {
-	provider := &vouch.OAuth2{
+	provider := &social.OAuth2{
 		Driver: "acme", ClientID: "id", ClientSecret: "secret", RedirectURL: "http://app/cb",
 		AuthURL: "https://acme/authorize", TokenURL: "https://acme/token",
 		Scopes: []string{"a"}, Extra: map[string]string{"prompt": "consent"}, IssuerURL: "https://acme",
@@ -32,7 +32,7 @@ func TestOAuth2ProviderFromEndpoints(t *testing.T) {
 	if provider.UsesPKCE() {
 		t.Error("WithoutPKCE ignored")
 	}
-	if (&vouch.OAuth2{Driver: "x", AuthURL: "a", TokenURL: "t"}).Configured() {
+	if (&social.OAuth2{Driver: "x", AuthURL: "a", TokenURL: "t"}).Configured() {
 		t.Error("a provider without a client id is not configured")
 	}
 }
@@ -48,10 +48,10 @@ func TestOAuth2ProviderReadsTheProfile(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	provider := &vouch.OAuth2{ProfileURL: server.URL + "/me", Profile: func(raw map[string]any) vouch.User {
-		return vouch.User{ID: vouch.String(raw, "id"), Nickname: vouch.String(raw, "handle")}
+	provider := &social.OAuth2{ProfileURL: server.URL + "/me", Profile: func(raw map[string]any) social.User {
+		return social.User{ID: social.String(raw, "id"), Nickname: social.String(raw, "handle")}
 	}}
-	grant := vouch.Grant{Token: &oauth2.Token{AccessToken: "tok"}, Client: (&oauth2.Config{}).Client(t.Context(), &oauth2.Token{AccessToken: "tok"})}
+	grant := social.Grant{Token: &oauth2.Token{AccessToken: "tok"}, Client: (&oauth2.Config{}).Client(t.Context(), &oauth2.Token{AccessToken: "tok"})}
 
 	user, err := provider.User(t.Context(), grant)
 	if err != nil || user.ID != "7" || user.Nickname != "person" {
@@ -62,14 +62,14 @@ func TestOAuth2ProviderReadsTheProfile(t *testing.T) {
 	}
 
 	// Without a Profile function the raw document is all there is.
-	bare := &vouch.OAuth2{ProfileURL: server.URL + "/me"}
+	bare := &social.OAuth2{ProfileURL: server.URL + "/me"}
 	user, err = bare.User(t.Context(), grant)
 	if err != nil || user.ID != "" || user.Raw == nil {
 		t.Fatalf("bare: %+v %v", user, err)
 	}
 
 	// A refused or broken profile endpoint is an error, not a user.
-	unauthorised := vouch.Grant{Client: (&oauth2.Config{}).Client(t.Context(), &oauth2.Token{AccessToken: "wrong"})}
+	unauthorised := social.Grant{Client: (&oauth2.Config{}).Client(t.Context(), &oauth2.Token{AccessToken: "wrong"})}
 	if _, err := provider.User(t.Context(), unauthorised); err == nil {
 		t.Error("a 401 from the profile endpoint should be an error")
 	}

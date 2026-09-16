@@ -1,4 +1,4 @@
-package vouch
+package social
 
 import (
 	"crypto/rand"
@@ -31,7 +31,7 @@ type CookieOptions struct {
 }
 
 const (
-	defaultCookieName     = "vouch_handshake"
+	defaultCookieName     = "social_handshake"
 	defaultCookieLifetime = 10 * time.Minute
 )
 
@@ -168,7 +168,7 @@ func randomToken(size int) string {
 	if _, err := rand.Read(buffer); err != nil {
 		// A system that cannot produce randomness must not carry on issuing
 		// tokens that are supposed to be unguessable.
-		panic("vouch: failed to read random bytes: " + err.Error())
+		panic("social: failed to read random bytes: " + err.Error())
 	}
 
 	return base64.RawURLEncoding.EncodeToString(buffer)

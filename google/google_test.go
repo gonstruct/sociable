@@ -3,12 +3,12 @@ package google_test
 import (
 	"testing"
 
-	"github.com/gonstruct/vouch"
-	"github.com/gonstruct/vouch/google"
+	"github.com/gonstruct/social"
+	"github.com/gonstruct/social/google"
 )
 
 func TestGoogleProvider(t *testing.T) {
-	provider := google.New(google.Options{ClientID: "id", ClientSecret: "secret", RedirectURL: "http://app/cb", Offline: true})().(*vouch.OAuth2)
+	provider := google.New(google.Options{ClientID: "id", ClientSecret: "secret", RedirectURL: "http://app/cb", Offline: true})().(*social.OAuth2)
 
 	if provider.Name() != "google" || !provider.Configured() || provider.Issuer() != "https://accounts.google.com" {
 		t.Fatalf("basics: %+v", provider)

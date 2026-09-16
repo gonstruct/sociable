@@ -1,4 +1,4 @@
-package vouch_test
+package social_test
 
 import (
 	"crypto/sha256"
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 )
 
 // authorizationServer is a provider that behaves: it redirects back with a
@@ -93,11 +93,11 @@ func newAuthorizationServer(t *testing.T) *authorizationServer {
 	return as
 }
 
-// application is the site signing people in: two handlers on vouch.
+// application is the site signing people in: two handlers on social.
 type application struct {
 	*httptest.Server
 
-	auth *vouch.Vouch
+	auth *social.Social
 }
 
 func newApplication(t *testing.T, as *authorizationServer) *application {
@@ -108,15 +108,15 @@ func newApplication(t *testing.T, as *authorizationServer) *application {
 	app.Server = httptest.NewServer(mux)
 	t.Cleanup(app.Close)
 
-	sealer, err := vouch.AESSealer([]byte("0123456789abcdef0123456789abcdef"))
+	sealer, err := social.AESSealer([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.auth, err = vouch.New(vouch.Configuration{
+	app.auth, err = social.New(social.Configuration{
 		Sealer: sealer,
-		Drivers: vouch.Drivers{
-			"acme": func() vouch.Provider {
-				return &vouch.OAuth2{
+		Drivers: social.Drivers{
+			"acme": func() social.Provider {
+				return &social.OAuth2{
 					Driver:       "acme",
 					ClientID:     "app-id",
 					ClientSecret: "app-secret",
@@ -126,12 +126,12 @@ func newApplication(t *testing.T, as *authorizationServer) *application {
 					ProfileURL:   as.URL + "/userinfo",
 					IssuerURL:    as.URL,
 					Scopes:       []string{"openid", "email"},
-					Profile: func(raw map[string]any) vouch.User {
-						return vouch.User{
-							ID:            vouch.String(raw, "sub"),
-							Email:         vouch.String(raw, "email"),
-							EmailVerified: vouch.Bool(raw, "email_verified"),
-							Name:          vouch.String(raw, "name"),
+					Profile: func(raw map[string]any) social.User {
+						return social.User{
+							ID:            social.String(raw, "sub"),
+							Email:         social.String(raw, "email"),
+							EmailVerified: social.Bool(raw, "email_verified"),
+							Name:          social.String(raw, "name"),
 						}
 					},
 				}
@@ -152,7 +152,7 @@ func newApplication(t *testing.T, as *authorizationServer) *application {
 		user, err := flow.User()
 		if err != nil {
 			status := http.StatusBadGateway
-			if errors.Is(err, vouch.ErrAccessDenied) {
+			if errors.Is(err, social.ErrAccessDenied) {
 				status = http.StatusForbidden
 			}
 			http.Error(w, err.Error(), status)
@@ -225,7 +225,7 @@ func TestEndToEndSignIn(t *testing.T) {
 	// The handshake is spent: the browser no longer holds the cookie.
 	appURL, _ := url.Parse(app.URL)
 	for _, cookie := range client.Jar.Cookies(appURL) {
-		if cookie.Name == "vouch_handshake" {
+		if cookie.Name == "social_handshake" {
 			t.Error("the handshake cookie survived the callback")
 		}
 	}
@@ -275,8 +275,8 @@ func TestEndToEndReplayedCallbackIsRefused(t *testing.T) {
 func TestEndToEndWrongSecretFailsTheExchange(t *testing.T) {
 	as := newAuthorizationServer(t)
 	app := newApplication(t, as)
-	app.auth.Extend("acme", func() vouch.Provider {
-		return &vouch.OAuth2{
+	app.auth.Extend("acme", func() social.Provider {
+		return &social.OAuth2{
 			Driver: "acme", ClientID: "app-id", ClientSecret: "wrong", RedirectURL: app.URL + "/callback",
 			AuthURL: as.URL + "/authorize", TokenURL: as.URL + "/token", ProfileURL: as.URL + "/userinfo",
 		}

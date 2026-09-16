@@ -1,4 +1,4 @@
-// Package vouch signs people in with somebody else's account: the OAuth 2.0
+// Package social signs people in with somebody else's account: the OAuth 2.0
 // authorization code flow with PKCE, on plain net/http, for any provider.
 //
 // A handler does two things:
@@ -30,7 +30,7 @@
 // It deliberately stops at the identity. What an application does with the
 // resolved user, sign them in, attach them to a workspace, refuse them, is the
 // application's.
-package vouch
+package social
 
 import (
 	"errors"
@@ -54,7 +54,7 @@ type Configuration struct {
 	Sealer Sealer
 
 	// Cookie is how the handshake travels between the redirect and the
-	// callback. Name defaults to "vouch_handshake", Path to "/", SameSite to
+	// callback. Name defaults to "social_handshake", Path to "/", SameSite to
 	// Lax, and Lifetime to ten minutes.
 	Cookie CookieOptions
 
@@ -65,19 +65,19 @@ type Configuration struct {
 	Client *http.Client
 }
 
-// Vouch is a set of providers bound to one configuration. Build it once at
+// Social is a set of providers bound to one configuration. Build it once at
 // boot and keep it; Driver binds a provider to a request.
-type Vouch struct {
+type Social struct {
 	mutex         sync.RWMutex
 	configuration Configuration
 }
 
 // ErrNoSealer is returned by New when the configuration cannot seal a
 // handshake, which would leave every flow stateless.
-var ErrNoSealer = errors.New("vouch: a Sealer is required")
+var ErrNoSealer = errors.New("social: a Sealer is required")
 
 // New validates the configuration and applies the cookie defaults.
-func New(configuration Configuration) (*Vouch, error) {
+func New(configuration Configuration) (*Social, error) {
 	if configuration.Sealer == nil {
 		return nil, ErrNoSealer
 	}
@@ -91,12 +91,12 @@ func New(configuration Configuration) (*Vouch, error) {
 		configuration.Client = http.DefaultClient
 	}
 
-	return &Vouch{configuration: configuration}, nil
+	return &Social{configuration: configuration}, nil
 }
 
 // Extend adds one driver, for a provider that is not part of the
 // application's own configuration.
-func (self *Vouch) Extend(name string, construct func() Provider) {
+func (self *Social) Extend(name string, construct func() Provider) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -106,7 +106,7 @@ func (self *Vouch) Extend(name string, construct func() Provider) {
 // Driver binds a provider to this request. An unknown name is not a panic: it
 // surfaces as ErrUnknownDriver from Redirect or User, so a typo in a route
 // fails as a response rather than as a crash.
-func (self *Vouch) Driver(writer http.ResponseWriter, request *http.Request, name string) *Flow {
+func (self *Social) Driver(writer http.ResponseWriter, request *http.Request, name string) *Flow {
 	self.mutex.RLock()
 	defer self.mutex.RUnlock()
 

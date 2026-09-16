@@ -2,7 +2,7 @@
 package google
 
 import (
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 )
 
 // Name is what the provider is registered and routed under.
@@ -18,11 +18,11 @@ type Options struct {
 	Offline      bool
 }
 
-// New is a constructor for a vouch.Drivers entry. The issuer is checked, the
+// New is a constructor for a social.Drivers entry. The issuer is checked, the
 // profile comes from the OpenID Connect userinfo endpoint, and the default
 // scopes are openid, email and profile.
-func New(options Options) func() vouch.Provider {
-	return func() vouch.Provider {
+func New(options Options) func() social.Provider {
+	return func() social.Provider {
 		scopes := options.Scopes
 		if len(scopes) == 0 {
 			scopes = []string{"openid", "email", "profile"}
@@ -34,7 +34,7 @@ func New(options Options) func() vouch.Provider {
 			extra["prompt"] = "consent"
 		}
 
-		return &vouch.OAuth2{
+		return &social.OAuth2{
 			Driver:       Name,
 			ClientID:     options.ClientID,
 			ClientSecret: options.ClientSecret,
@@ -52,13 +52,13 @@ func New(options Options) func() vouch.Provider {
 
 // Profile maps the userinfo document. sub is the stable identifier; email
 // is verified only when Google says so.
-func Profile(raw map[string]any) vouch.User {
-	return vouch.User{
-		ID:            vouch.String(raw, "sub"),
-		Nickname:      vouch.String(raw, "given_name"),
-		Name:          vouch.String(raw, "name"),
-		Email:         vouch.String(raw, "email"),
-		EmailVerified: vouch.Bool(raw, "email_verified"),
-		Avatar:        vouch.String(raw, "picture"),
+func Profile(raw map[string]any) social.User {
+	return social.User{
+		ID:            social.String(raw, "sub"),
+		Nickname:      social.String(raw, "given_name"),
+		Name:          social.String(raw, "name"),
+		Email:         social.String(raw, "email"),
+		EmailVerified: social.Bool(raw, "email_verified"),
+		Avatar:        social.String(raw, "picture"),
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 	"golang.org/x/oauth2"
 )
 
@@ -39,7 +39,7 @@ func TestGitHubProfileAndEmailFallback(t *testing.T) {
 	provider.ProfileURL = server.URL + "/user"
 	provider.emailsURL = server.URL + "/user/emails"
 
-	grant := vouch.Grant{Client: (&oauth2.Config{}).Client(context.Background(), &oauth2.Token{AccessToken: "tok"})}
+	grant := social.Grant{Client: (&oauth2.Config{}).Client(context.Background(), &oauth2.Token{AccessToken: "tok"})}
 	user, err := provider.User(context.Background(), grant)
 	if err != nil {
 		t.Fatal(err)

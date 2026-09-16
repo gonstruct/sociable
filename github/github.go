@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 )
 
 // Name is what the provider is registered and routed under.
@@ -24,20 +24,20 @@ type Options struct {
 }
 
 type provider struct {
-	*vouch.OAuth2
+	*social.OAuth2
 
 	emailsURL string
 }
 
-// New is a constructor for a vouch.Drivers entry.
-func New(options Options) func() vouch.Provider {
-	return func() vouch.Provider {
+// New is a constructor for a social.Drivers entry.
+func New(options Options) func() social.Provider {
+	return func() social.Provider {
 		scopes := options.Scopes
 		if len(scopes) == 0 {
 			scopes = []string{"read:user", "user:email"}
 		}
 
-		return &provider{emailsURL: "https://api.github.com/user/emails", OAuth2: &vouch.OAuth2{
+		return &provider{emailsURL: "https://api.github.com/user/emails", OAuth2: &social.OAuth2{
 			Driver:       Name,
 			ClientID:     options.ClientID,
 			ClientSecret: options.ClientSecret,
@@ -52,8 +52,8 @@ func New(options Options) func() vouch.Provider {
 
 // User reads the profile and, when the profile hides the address, the
 // primary verified one from the emails endpoint.
-func (self *provider) User(ctx context.Context, grant vouch.Grant) (*vouch.User, error) {
-	raw, err := vouch.FetchJSON(grant, self.ProfileURL)
+func (self *provider) User(ctx context.Context, grant social.Grant) (*social.User, error) {
+	raw, err := social.FetchJSON(grant, self.ProfileURL)
 	if err != nil {
 		return nil, err
 	}
@@ -75,21 +75,21 @@ func (self *provider) User(ctx context.Context, grant vouch.Grant) (*vouch.User,
 // Profile maps the user document. The numeric id is the stable identifier;
 // the login is the nickname. An address on the profile is one GitHub shows
 // publicly, which it only does once it is verified.
-func Profile(raw map[string]any) vouch.User {
+func Profile(raw map[string]any) social.User {
 	id := ""
 	if number, ok := raw["id"].(float64); ok {
 		id = strconv.FormatInt(int64(number), 10)
 	}
 
-	email := vouch.String(raw, "email")
+	email := social.String(raw, "email")
 
-	return vouch.User{
+	return social.User{
 		ID:            id,
-		Nickname:      vouch.String(raw, "login"),
-		Name:          vouch.String(raw, "name"),
+		Nickname:      social.String(raw, "login"),
+		Name:          social.String(raw, "name"),
 		Email:         email,
 		EmailVerified: email != "",
-		Avatar:        vouch.String(raw, "avatar_url"),
+		Avatar:        social.String(raw, "avatar_url"),
 	}
 }
 
@@ -99,7 +99,7 @@ type email struct {
 	Verified bool   `json:"verified"`
 }
 
-func primaryEmail(grant vouch.Grant, url string) (string, bool, error) {
+func primaryEmail(grant social.Grant, url string) (string, bool, error) {
 	response, err := grant.Client.Get(url)
 	if err != nil {
 		return "", false, fmt.Errorf("get emails: %w", err)

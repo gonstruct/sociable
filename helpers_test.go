@@ -1,4 +1,4 @@
-package vouch_test
+package social_test
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 	"golang.org/x/oauth2"
 )
 
@@ -41,8 +41,8 @@ func (fakeProvider) Config() *oauth2.Config {
 	}
 }
 
-func (fakeProvider) User(_ context.Context, grant vouch.Grant) (*vouch.User, error) {
-	return &vouch.User{
+func (fakeProvider) User(_ context.Context, grant social.Grant) (*social.User, error) {
+	return &social.User{
 		ID:            "1",
 		Email:         "person@provider.test",
 		EmailVerified: true,
@@ -107,12 +107,12 @@ func (provider exchangingProvider) Config() *oauth2.Config {
 }
 
 // setup builds a registry with one provider under "fake".
-func setup(t *testing.T, construct func() vouch.Provider) *vouch.Vouch {
+func setup(t *testing.T, construct func() social.Provider) *social.Social {
 	t.Helper()
 
-	auth, err := vouch.New(vouch.Configuration{
+	auth, err := social.New(social.Configuration{
 		Sealer:  plainSealer{},
-		Drivers: vouch.Drivers{"fake": construct},
+		Drivers: social.Drivers{"fake": construct},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,13 +121,13 @@ func setup(t *testing.T, construct func() vouch.Provider) *vouch.Vouch {
 	return auth
 }
 
-func fake(configured bool) func() vouch.Provider {
-	return func() vouch.Provider { return fakeProvider{configured: configured} }
+func fake(configured bool) func() social.Provider {
+	return func() social.Provider { return fakeProvider{configured: configured} }
 }
 
 // redirect runs Redirect through a handler and returns what the browser
 // would have received: the Location and the handshake cookie.
-func redirect(t *testing.T, auth *vouch.Vouch, redirectTo string, shape ...func(*vouch.Flow) *vouch.Flow) *httptest.ResponseRecorder {
+func redirect(t *testing.T, auth *social.Social, redirectTo string, shape ...func(*social.Flow) *social.Flow) *httptest.ResponseRecorder {
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
@@ -149,11 +149,11 @@ func redirect(t *testing.T, auth *vouch.Vouch, redirectTo string, shape ...func(
 // must be cleared by it.
 func callback(
 	t *testing.T,
-	auth *vouch.Vouch,
+	auth *social.Social,
 	target string,
 	from *httptest.ResponseRecorder,
-	shape ...func(*vouch.Flow) *vouch.Flow,
-) (*vouch.User, error, *httptest.ResponseRecorder) {
+	shape ...func(*social.Flow) *social.Flow,
+) (*social.User, error, *httptest.ResponseRecorder) {
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
@@ -206,6 +206,6 @@ func tokenEndpoint(t *testing.T) string {
 	return server.URL
 }
 
-func expired() vouch.CookieOptions {
-	return vouch.CookieOptions{Lifetime: -time.Second}
+func expired() social.CookieOptions {
+	return social.CookieOptions{Lifetime: -time.Second}
 }

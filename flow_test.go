@@ -1,4 +1,4 @@
-package vouch_test
+package social_test
 
 import (
 	"crypto/sha256"
@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gonstruct/vouch"
+	"github.com/gonstruct/social"
 	"golang.org/x/oauth2"
 )
 
@@ -29,7 +29,7 @@ func TestRedirectCarriesAChallengeAndNotTheVerifier(t *testing.T) {
 	if query.Get("code_verifier") != "" {
 		t.Fatal("the verifier reached the provider")
 	}
-	if len(recorder.Result().Cookies()) != 1 || recorder.Result().Cookies()[0].Name != "vouch_handshake" {
+	if len(recorder.Result().Cookies()) != 1 || recorder.Result().Cookies()[0].Name != "social_handshake" {
 		t.Fatalf("expected the handshake cookie, got %v", recorder.Result().Cookies())
 	}
 }
@@ -39,7 +39,7 @@ func TestRedirectRefusesAnUnconfiguredProvider(t *testing.T) {
 	recorder := httptest.NewRecorder()
 
 	err := auth.Driver(recorder, httptest.NewRequest(http.MethodGet, "/login", nil), "fake").Redirect("")
-	if !errors.Is(err, vouch.ErrNotConfigured) {
+	if !errors.Is(err, social.ErrNotConfigured) {
 		t.Fatalf("expected ErrNotConfigured, got %v", err)
 	}
 	if recorder.Header().Get("Location") != "" || len(recorder.Result().Cookies()) != 0 {
@@ -51,23 +51,23 @@ func TestAnUnknownDriverIsAnErrorRatherThanAPanic(t *testing.T) {
 	auth := setup(t, fake(true))
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	if err := auth.Driver(httptest.NewRecorder(), request, "nope").Redirect(""); !errors.Is(err, vouch.ErrUnknownDriver) {
+	if err := auth.Driver(httptest.NewRecorder(), request, "nope").Redirect(""); !errors.Is(err, social.ErrUnknownDriver) {
 		t.Fatalf("redirect: expected ErrUnknownDriver, got %v", err)
 	}
-	if _, err := auth.Driver(httptest.NewRecorder(), request, "nope").User(); !errors.Is(err, vouch.ErrUnknownDriver) {
+	if _, err := auth.Driver(httptest.NewRecorder(), request, "nope").User(); !errors.Is(err, social.ErrUnknownDriver) {
 		t.Fatalf("user: expected ErrUnknownDriver, got %v", err)
 	}
 }
 
 func TestNewRequiresASealer(t *testing.T) {
-	if _, err := vouch.New(vouch.Configuration{}); !errors.Is(err, vouch.ErrNoSealer) {
+	if _, err := social.New(social.Configuration{}); !errors.Is(err, social.ErrNoSealer) {
 		t.Fatalf("expected ErrNoSealer, got %v", err)
 	}
 }
 
 func TestUserWithoutAHandshakeIsRefused(t *testing.T) {
 	_, err, _ := callback(t, setup(t, fake(true)), "/callback?code=c&state=s", nil)
-	if !errors.Is(err, vouch.ErrNoHandshake) {
+	if !errors.Is(err, social.ErrNoHandshake) {
 		t.Fatalf("expected ErrNoHandshake, got %v", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestUserRefusesAForgedState(t *testing.T) {
 	started := redirect(t, auth, "")
 
 	_, err, _ := callback(t, auth, "/callback?code=c&state=forged", started)
-	if !errors.Is(err, vouch.ErrStateMismatch) {
+	if !errors.Is(err, social.ErrStateMismatch) {
 		t.Fatalf("expected ErrStateMismatch, got %v", err)
 	}
 }
@@ -87,19 +87,19 @@ func TestTheHandshakeIsSpentEvenByAFailedAttempt(t *testing.T) {
 	started := redirect(t, auth, "")
 
 	_, err, cleared := callback(t, auth, "/callback?code=c&state=forged", started)
-	if !errors.Is(err, vouch.ErrStateMismatch) {
+	if !errors.Is(err, social.ErrStateMismatch) {
 		t.Fatalf("expected the first attempt to fail on state, got %v", err)
 	}
 
 	// The failed attempt cleared the cookie; the retry carries that.
 	_, err, _ = callback(t, auth, "/callback?code=c&state=forged", cleared)
-	if !errors.Is(err, vouch.ErrNoHandshake) {
+	if !errors.Is(err, social.ErrNoHandshake) {
 		t.Fatalf("expected the handshake to be spent, got %v", err)
 	}
 }
 
 func TestChallengeIsTheSha256OfTheVerifier(t *testing.T) {
-	handshake := vouch.Handshake{CodeVerifier: "a-known-verifier"}
+	handshake := social.Handshake{CodeVerifier: "a-known-verifier"}
 
 	sum := sha256.Sum256([]byte("a-known-verifier"))
 	if expected := base64.RawURLEncoding.EncodeToString(sum[:]); handshake.Challenge() != expected {
@@ -118,14 +118,14 @@ func TestSafeRedirectKeepsOnlyLocalPaths(t *testing.T) {
 	}
 
 	for candidate, expected := range cases {
-		if got := vouch.SafeRedirect(candidate); got != expected {
+		if got := social.SafeRedirect(candidate); got != expected {
 			t.Errorf("SafeRedirect(%q) = %q, want %q", candidate, got, expected)
 		}
 	}
 }
 
 func TestAProviderCanAddItsOwnAuthorizationParameters(t *testing.T) {
-	query := issuedQuery(t, redirect(t, setup(t, func() vouch.Provider { return parameterisedProvider{} }), ""))
+	query := issuedQuery(t, redirect(t, setup(t, func() social.Provider { return parameterisedProvider{} }), ""))
 
 	if query.Get("access_type") != "offline" || query.Get("prompt") != "consent" {
 		t.Fatalf("the provider's parameters did not reach the provider: %s", query.Encode())
@@ -137,7 +137,7 @@ func TestAProviderCanAddItsOwnAuthorizationParameters(t *testing.T) {
 }
 
 func TestAProviderCanOptOutOfPKCE(t *testing.T) {
-	query := issuedQuery(t, redirect(t, setup(t, func() vouch.Provider { return unprotectedProvider{} }), ""))
+	query := issuedQuery(t, redirect(t, setup(t, func() social.Provider { return unprotectedProvider{} }), ""))
 
 	if query.Get("code_challenge") != "" || query.Get("code_challenge_method") != "" {
 		t.Fatalf("a provider that opted out was still sent a challenge: %s", query.Encode())
@@ -150,14 +150,14 @@ func TestAProviderCanOptOutOfPKCE(t *testing.T) {
 }
 
 func TestACallSiteCanOverrideTheProviderOnPKCE(t *testing.T) {
-	auth := setup(t, func() vouch.Provider { return unprotectedProvider{} })
+	auth := setup(t, func() social.Provider { return unprotectedProvider{} })
 
-	on := issuedQuery(t, redirect(t, auth, "", (*vouch.Flow).UsingPKCE))
+	on := issuedQuery(t, redirect(t, auth, "", (*social.Flow).UsingPKCE))
 	if on.Get("code_challenge") == "" {
 		t.Fatal("UsingPKCE did not turn the challenge on")
 	}
 
-	off := issuedQuery(t, redirect(t, setup(t, fake(true)), "", (*vouch.Flow).WithoutPKCE))
+	off := issuedQuery(t, redirect(t, setup(t, fake(true)), "", (*social.Flow).WithoutPKCE))
 	if off.Get("code_challenge") != "" {
 		t.Fatal("WithoutPKCE did not turn the challenge off")
 	}
@@ -170,14 +170,14 @@ func TestARefusalIsReadRatherThanExchanged(t *testing.T) {
 	_, err, _ := callback(t, auth, "/callback?error=access_denied&error_description=The+user+said+no&state="+issuedState(t, started), started)
 
 	// A cancelled sign-in is an answer, not a broken exchange.
-	if !errors.Is(err, vouch.ErrAccessDenied) {
+	if !errors.Is(err, social.ErrAccessDenied) {
 		t.Fatalf("expected ErrAccessDenied, got %v", err)
 	}
-	if !errors.Is(err, vouch.ErrAuthorization) {
+	if !errors.Is(err, social.ErrAuthorization) {
 		t.Fatal("a denial should also match every refusal")
 	}
 
-	var refusal *vouch.AuthorizationError
+	var refusal *social.AuthorizationError
 	if !errors.As(err, &refusal) || refusal.Description != "The user said no" {
 		t.Fatalf("the provider's own words were lost: %v", err)
 	}
@@ -189,10 +189,10 @@ func TestARefusalThatIsNotADenialStillMatchesAuthorization(t *testing.T) {
 
 	_, err, _ := callback(t, auth, "/callback?error=temporarily_unavailable&state="+issuedState(t, started), started)
 
-	if errors.Is(err, vouch.ErrAccessDenied) {
+	if errors.Is(err, social.ErrAccessDenied) {
 		t.Fatal("an outage was reported as the person declining")
 	}
-	if !errors.Is(err, vouch.ErrAuthorization) {
+	if !errors.Is(err, social.ErrAuthorization) {
 		t.Fatalf("expected ErrAuthorization, got %v", err)
 	}
 }
@@ -205,42 +205,42 @@ func TestARefusalIsOnlyReadOnceTheStateMatches(t *testing.T) {
 	// ties the response to a handshake this server issued, what it says is
 	// not worth reading.
 	_, err, _ := callback(t, auth, "/callback?error=access_denied&state=forged", started)
-	if !errors.Is(err, vouch.ErrStateMismatch) {
+	if !errors.Is(err, social.ErrStateMismatch) {
 		t.Fatalf("expected ErrStateMismatch, got %v", err)
 	}
 }
 
 func TestAProviderThatNamesItselfMustBeTheOneThatAnswered(t *testing.T) {
-	auth := setup(t, func() vouch.Provider { return issuedProvider{} })
+	auth := setup(t, func() social.Provider { return issuedProvider{} })
 	started := redirect(t, auth, "")
 
 	_, err, _ := callback(t, auth, "/callback?code=c&iss=https://attacker.test&state="+issuedState(t, started), started)
-	if !errors.Is(err, vouch.ErrIssuerMismatch) {
+	if !errors.Is(err, social.ErrIssuerMismatch) {
 		t.Fatalf("expected ErrIssuerMismatch, got %v", err)
 	}
 }
 
 func TestAMissingIssuerIsAMismatchForAProviderThatSendsOne(t *testing.T) {
-	auth := setup(t, func() vouch.Provider { return issuedProvider{} })
+	auth := setup(t, func() social.Provider { return issuedProvider{} })
 	started := redirect(t, auth, "")
 
 	// RFC 9207 only defeats a mix-up if a client that expects an issuer
 	// refuses a response without one.
 	_, err, _ := callback(t, auth, "/callback?code=c&state="+issuedState(t, started), started)
-	if !errors.Is(err, vouch.ErrIssuerMismatch) {
+	if !errors.Is(err, social.ErrIssuerMismatch) {
 		t.Fatalf("expected ErrIssuerMismatch, got %v", err)
 	}
 }
 
 func TestScopesAddAndSetScopesReplace(t *testing.T) {
-	auth := setup(t, func() vouch.Provider { return scopedProvider{} })
+	auth := setup(t, func() social.Provider { return scopedProvider{} })
 
-	added := issuedQuery(t, redirect(t, auth, "", func(flow *vouch.Flow) *vouch.Flow { return flow.Scopes("email", "profile") }))
+	added := issuedQuery(t, redirect(t, auth, "", func(flow *social.Flow) *social.Flow { return flow.Scopes("email", "profile") }))
 	if scope := added.Get("scope"); scope != "profile email" {
 		t.Fatalf("expected the provider's scope kept and one added, got %q", scope)
 	}
 
-	replaced := issuedQuery(t, redirect(t, auth, "", func(flow *vouch.Flow) *vouch.Flow { return flow.SetScopes("email") }))
+	replaced := issuedQuery(t, redirect(t, auth, "", func(flow *social.Flow) *social.Flow { return flow.SetScopes("email") }))
 	if scope := replaced.Get("scope"); scope != "email" {
 		t.Fatalf("expected only the scope set, got %q", scope)
 	}
@@ -248,13 +248,13 @@ func TestScopesAddAndSetScopesReplace(t *testing.T) {
 
 func TestTheOpenIDScopeIsWhatIssuesANonce(t *testing.T) {
 	tokenURL := tokenEndpoint(t)
-	auth := setup(t, func() vouch.Provider { return exchangingProvider{tokenURL: tokenURL} })
+	auth := setup(t, func() social.Provider { return exchangingProvider{tokenURL: tokenURL} })
 
 	if issuedQuery(t, redirect(t, auth, "")).Get("nonce") != "" {
 		t.Fatal("a plain OAuth2 request was sent a nonce")
 	}
 
-	openid := func(flow *vouch.Flow) *vouch.Flow { return flow.Scopes("openid") }
+	openid := func(flow *social.Flow) *social.Flow { return flow.Scopes("openid") }
 	started := redirect(t, auth, "", openid)
 	nonce := issuedQuery(t, started).Get("nonce")
 	if nonce == "" {
@@ -266,16 +266,16 @@ func TestTheOpenIDScopeIsWhatIssuesANonce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant, ok := user.Raw.(vouch.Grant); !ok || grant.Nonce != nonce {
+	if grant, ok := user.Raw.(social.Grant); !ok || grant.Nonce != nonce {
 		t.Fatal("the nonce never reached the provider")
 	}
-	if grant := user.Raw.(vouch.Grant); grant.Client == nil {
+	if grant := user.Raw.(social.Grant); grant.Client == nil {
 		t.Fatal("the provider was not given an authenticated client")
 	}
 }
 
 func TestWithCannotOverwriteWhatMakesTheCallbackTrustworthy(t *testing.T) {
-	query := issuedQuery(t, redirect(t, setup(t, fake(true)), "", func(flow *vouch.Flow) *vouch.Flow {
+	query := issuedQuery(t, redirect(t, setup(t, fake(true)), "", func(flow *social.Flow) *social.Flow {
 		return flow.With(map[string]string{"login_hint": "person@provider.test", "state": "chosen"})
 	}))
 
@@ -288,7 +288,7 @@ func TestWithCannotOverwriteWhatMakesTheCallbackTrustworthy(t *testing.T) {
 }
 
 func TestRedirectURLOverridesTheProviders(t *testing.T) {
-	query := issuedQuery(t, redirect(t, setup(t, fake(true)), "", func(flow *vouch.Flow) *vouch.Flow {
+	query := issuedQuery(t, redirect(t, setup(t, fake(true)), "", func(flow *social.Flow) *social.Flow {
 		return flow.RedirectURL("http://localhost/other")
 	}))
 	if query.Get("redirect_uri") != "http://localhost/other" {
@@ -297,7 +297,7 @@ func TestRedirectURLOverridesTheProviders(t *testing.T) {
 }
 
 func TestStatelessCarriesNoHandshakeAtAll(t *testing.T) {
-	recorder := redirect(t, setup(t, fake(true)), "", (*vouch.Flow).Stateless)
+	recorder := redirect(t, setup(t, fake(true)), "", (*social.Flow).Stateless)
 
 	if len(recorder.Result().Cookies()) != 0 {
 		t.Fatal("a stateless flow wrote a cookie")
@@ -310,7 +310,7 @@ func TestStatelessCarriesNoHandshakeAtAll(t *testing.T) {
 
 func TestRedirectToComesBackFromTheHandshake(t *testing.T) {
 	tokenURL := tokenEndpoint(t)
-	auth := setup(t, func() vouch.Provider { return exchangingProvider{tokenURL: tokenURL} })
+	auth := setup(t, func() social.Provider { return exchangingProvider{tokenURL: tokenURL} })
 	started := redirect(t, auth, "/settings")
 
 	recorder := httptest.NewRecorder()
@@ -330,7 +330,7 @@ func TestRedirectToComesBackFromTheHandshake(t *testing.T) {
 	}
 	// The callback clears the handshake for good.
 	for _, cookie := range recorder.Result().Cookies() {
-		if cookie.Name == "vouch_handshake" && cookie.MaxAge >= 0 {
+		if cookie.Name == "social_handshake" && cookie.MaxAge >= 0 {
 			t.Fatal("the handshake cookie was not cleared")
 		}
 	}
@@ -363,17 +363,17 @@ func TestATokenThisPackageCannotPresentIsRefused(t *testing.T) {
 	auth := setup(t, fake(true))
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 
-	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(&oauth2.Token{}); !errors.Is(err, vouch.ErrExchange) {
+	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(&oauth2.Token{}); !errors.Is(err, social.ErrExchange) {
 		t.Fatalf("an empty access token was accepted: %v", err)
 	}
 	mac := &oauth2.Token{AccessToken: "a", TokenType: "mac"}
-	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(mac); !errors.Is(err, vouch.ErrExchange) {
+	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(mac); !errors.Is(err, social.ErrExchange) {
 		t.Fatalf("a token type this client cannot use was accepted: %v", err)
 	}
 }
 
 func TestAnExpiredHandshakeIsNoHandshake(t *testing.T) {
-	auth, err := vouch.New(vouch.Configuration{Sealer: plainSealer{}, Cookie: expired(), Drivers: vouch.Drivers{"fake": fake(true)}})
+	auth, err := social.New(social.Configuration{Sealer: plainSealer{}, Cookie: expired(), Drivers: social.Drivers{"fake": fake(true)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestAnExpiredHandshakeIsNoHandshake(t *testing.T) {
 	// The cookie's own max-age is the browser's to honour. The expiry inside
 	// the sealed payload is not.
 	_, err, _ = callback(t, auth, "/callback?code=c&state="+issuedState(t, started), started)
-	if !errors.Is(err, vouch.ErrNoHandshake) {
+	if !errors.Is(err, social.ErrNoHandshake) {
 		t.Fatalf("expected ErrNoHandshake, got %v", err)
 	}
 }
@@ -397,7 +397,7 @@ func TestATamperedHandshakeIsNoHandshake(t *testing.T) {
 		cookie.Value = "not-" + cookie.Value
 		request.AddCookie(cookie)
 	}
-	if _, err := auth.Driver(recorder, request, "fake").User(); !errors.Is(err, vouch.ErrNoHandshake) {
+	if _, err := auth.Driver(recorder, request, "fake").User(); !errors.Is(err, social.ErrNoHandshake) {
 		t.Fatalf("expected ErrNoHandshake, got %v", err)
 	}
 }
@@ -413,10 +413,10 @@ func TestExtendAddsADriverAtRuntime(t *testing.T) {
 }
 
 func TestCookieOptionsAreMirrored(t *testing.T) {
-	auth, err := vouch.New(vouch.Configuration{
+	auth, err := social.New(social.Configuration{
 		Sealer:  plainSealer{},
-		Cookie:  vouch.CookieOptions{Name: "hs", Path: "/auth", Domain: "example.test", Secure: true, SameSite: http.SameSiteStrictMode},
-		Drivers: vouch.Drivers{"fake": fake(true)},
+		Cookie:  social.CookieOptions{Name: "hs", Path: "/auth", Domain: "example.test", Secure: true, SameSite: http.SameSiteStrictMode},
+		Drivers: social.Drivers{"fake": fake(true)},
 	})
 	if err != nil {
 		t.Fatal(err)

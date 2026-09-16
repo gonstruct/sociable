@@ -1,4 +1,4 @@
-package vouch
+package social
 
 import (
 	"context"

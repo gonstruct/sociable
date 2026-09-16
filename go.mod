@@ -1,4 +1,4 @@
-module github.com/gonstruct/vouch
+module github.com/gonstruct/social
 
 go 1.26.0
 

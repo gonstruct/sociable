@@ -1,4 +1,4 @@
-package vouch
+package social
 
 import (
 	"crypto/aes"
@@ -11,7 +11,7 @@ import (
 
 // ErrSealed is returned by a sealer that cannot open what it was given: a
 // forged, truncated or foreign value. The flow treats it as no handshake.
-var ErrSealed = errors.New("vouch: the sealed value cannot be opened")
+var ErrSealed = errors.New("social: the sealed value cannot be opened")
 
 type aesSealer struct {
 	aead cipher.AEAD
@@ -23,12 +23,12 @@ type aesSealer struct {
 func AESSealer(key []byte) (Sealer, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, fmt.Errorf("vouch: %w", err)
+		return nil, fmt.Errorf("social: %w", err)
 	}
 
 	aead, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("vouch: %w", err)
+		return nil, fmt.Errorf("social: %w", err)
 	}
 
 	return &aesSealer{aead: aead}, nil
@@ -37,7 +37,7 @@ func AESSealer(key []byte) (Sealer, error) {
 func (self *aesSealer) Seal(plain []byte) (string, error) {
 	nonce := make([]byte, self.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return "", fmt.Errorf("vouch: %w", err)
+		return "", fmt.Errorf("social: %w", err)
 	}
 
 	sealed := self.aead.Seal(nonce, nonce, plain, nil)
