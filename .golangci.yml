@@ -1,0 +1,40 @@
+version: "2" # https://golangci-lint.run/usage/configuration/
+
+linters:
+  default: fast
+  disable:
+    - wsl
+    - depguard
+    - nlreturn
+    - mnd
+    - misspell
+    - inamedparam
+    - funcorder
+
+  settings:
+    lll:
+      line-length: 160
+    funlen:
+      lines: 120
+      statements: 70
+    cyclop:
+      max-complexity: 15
+    dupl:
+      threshold: 200
+
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test\.go$
+        linters: [funlen, dupl, maintidx, cyclop, gocognit]
+      - path: ^examples/
+        linters: [errcheck, forbidigo, gosec, funlen, lll, ineffassign, staticcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+
+run:
+  allow-parallel-runners: true

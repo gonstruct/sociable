@@ -1,0 +1,52 @@
+name: Checks
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+concurrency:
+    group: checks-${{ github.event.pull_request.number || github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    lint:
+        name: lint
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: actions/setup-go@v7
+              with:
+                  go-version-file: go.mod
+                  cache-dependency-path: go.sum
+
+            - uses: golangci/golangci-lint-action@v9
+              with:
+                  version: v2.13.2
+                  args: --timeout 5m
+                  # Config verification downloads its JSON schema from golangci-lint.run,
+                  # which intermittently times out on CI runners and fails the job.
+                  verify: false
+
+    test:
+        name: test
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: actions/setup-go@v7
+              with:
+                  go-version-file: go.mod
+                  cache-dependency-path: go.sum
+
+            - name: Build everything, examples included
+              run: go build ./... && go vet ./...
+
+            - name: Test
+              run: go test -race -count=1 -coverprofile=coverage.out -coverpkg=./... ./...
+
+            - name: Coverage
+              run: go tool cover -func=coverage.out | tail -1
