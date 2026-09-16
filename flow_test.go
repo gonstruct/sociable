@@ -366,7 +366,8 @@ func TestATokenThisPackageCannotPresentIsRefused(t *testing.T) {
 	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(&oauth2.Token{}); !errors.Is(err, vouch.ErrExchange) {
 		t.Fatalf("an empty access token was accepted: %v", err)
 	}
-	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(&oauth2.Token{AccessToken: "a", TokenType: "mac"}); !errors.Is(err, vouch.ErrExchange) {
+	mac := &oauth2.Token{AccessToken: "a", TokenType: "mac"}
+	if _, err := auth.Driver(httptest.NewRecorder(), request, "fake").UserFromToken(mac); !errors.Is(err, vouch.ErrExchange) {
 		t.Fatalf("a token type this client cannot use was accepted: %v", err)
 	}
 }
