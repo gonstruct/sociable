@@ -2,6 +2,8 @@
 package google
 
 import (
+	"net/http"
+
 	"github.com/gonstruct/social"
 )
 
@@ -16,49 +18,28 @@ type Options struct {
 	RedirectURL  string
 	Scopes       []string
 	Offline      bool
+
+	// Client fetches Google's discovery document and signing keys.
+	Client *http.Client
 }
 
-// New is a constructor for a social.Drivers entry. The issuer is checked, the
-// profile comes from the OpenID Connect userinfo endpoint, and the default
-// scopes are openid, email and profile.
-func New(options Options) func() social.Provider {
-	return func() social.Provider {
-		scopes := options.Scopes
-		if len(scopes) == 0 {
-			scopes = []string{"openid", "email", "profile"}
-		}
-
-		extra := map[string]string{}
-		if options.Offline {
-			extra["access_type"] = "offline"
-			extra["prompt"] = "consent"
-		}
-
-		return &social.OAuth2{
-			Driver:       Name,
-			ClientID:     options.ClientID,
-			ClientSecret: options.ClientSecret,
-			RedirectURL:  options.RedirectURL,
-			AuthURL:      "https://accounts.google.com/o/oauth2/v2/auth",
-			TokenURL:     "https://oauth2.googleapis.com/token",
-			ProfileURL:   "https://openidconnect.googleapis.com/v1/userinfo",
-			IssuerURL:    "https://accounts.google.com",
-			Scopes:       scopes,
-			Extra:        extra,
-			Profile:      Profile,
-		}
+// New is a provider for a social.Drivers entry. Endpoints and keys come from
+// Google's discovery document, and the identity from a verified ID token.
+func New(options Options) social.Provider {
+	extra := map[string]string{}
+	if options.Offline {
+		extra["access_type"] = "offline"
+		extra["prompt"] = "consent"
 	}
-}
 
-// Profile maps the userinfo document. sub is the stable identifier; email
-// is verified only when Google says so.
-func Profile(raw map[string]any) social.User {
-	return social.User{
-		ID:            social.String(raw, "sub"),
-		Nickname:      social.String(raw, "given_name"),
-		Name:          social.String(raw, "name"),
-		Email:         social.String(raw, "email"),
-		EmailVerified: social.Bool(raw, "email_verified"),
-		Avatar:        social.String(raw, "picture"),
+	return &social.OpenIDConnect{
+		Driver:       Name,
+		IssuerURL:    "https://accounts.google.com",
+		ClientID:     options.ClientID,
+		ClientSecret: options.ClientSecret,
+		RedirectURL:  options.RedirectURL,
+		Scopes:       options.Scopes,
+		Extra:        extra,
+		Client:       options.Client,
 	}
 }

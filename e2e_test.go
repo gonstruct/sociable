@@ -71,7 +71,7 @@ func newAuthorizationServer(t *testing.T) *authorizationServer {
 		default:
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "the-token", "token_type": "Bearer", "expires_in": 3600, "scope": "openid email",
+				"access_token": "the-token", "token_type": "Bearer", "expires_in": 3600, "scope": "profile email",
 			})
 		}
 	})
@@ -100,7 +100,7 @@ type application struct {
 	auth *social.Social
 }
 
-func newApplication(t *testing.T, as *authorizationServer) *application {
+func newApplication(t *testing.T, provider func(app *application) social.Provider) *application {
 	t.Helper()
 
 	app := &application{}
@@ -112,44 +112,18 @@ func newApplication(t *testing.T, as *authorizationServer) *application {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.auth, err = social.New(social.Configuration{
-		Sealer: sealer,
-		Drivers: social.Drivers{
-			"acme": func() social.Provider {
-				return &social.OAuth2{
-					Driver:       "acme",
-					ClientID:     "app-id",
-					ClientSecret: "app-secret",
-					RedirectURL:  app.URL + "/callback",
-					AuthURL:      as.URL + "/authorize",
-					TokenURL:     as.URL + "/token",
-					ProfileURL:   as.URL + "/userinfo",
-					IssuerURL:    as.URL,
-					Scopes:       []string{"openid", "email"},
-					Profile: func(raw map[string]any) social.User {
-						return social.User{
-							ID:            social.String(raw, "sub"),
-							Email:         social.String(raw, "email"),
-							EmailVerified: social.Bool(raw, "email_verified"),
-							Name:          social.String(raw, "name"),
-						}
-					},
-				}
-			},
-		},
-	})
+	app.auth, err = social.New(social.Configuration{Sealer: sealer, Drivers: social.Drivers{"acme": provider(app)}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-		if err := app.auth.Driver(w, r, "acme").Redirect(r.URL.Query().Get("to")); err != nil {
+		if err := app.auth.Redirect(w, r, "acme", social.To(r.URL.Query().Get("to"))); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
-		flow := app.auth.Driver(w, r, "acme")
-		user, err := flow.User()
+		result, err := app.auth.Callback(w, r, "acme")
 		if err != nil {
 			status := http.StatusBadGateway
 			if errors.Is(err, social.ErrAccessDenied) {
@@ -160,12 +134,28 @@ func newApplication(t *testing.T, as *authorizationServer) *application {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id": user.ID, "email": user.Email, "verified": user.EmailVerified, "name": user.Name,
-			"scopes": user.ApprovedScopes, "redirectTo": flow.RedirectTo(), "token": user.Token.AccessToken,
+			"id": result.User.ID, "email": result.User.Email, "verified": result.User.EmailVerified, "name": result.User.Name,
+			"scopes": result.User.ApprovedScopes, "redirectTo": result.RedirectTo, "token": result.User.Token.AccessToken,
 		})
 	})
 
 	return app
+}
+
+func oauth2Provider(as *authorizationServer, secret string) func(app *application) social.Provider {
+	return func(app *application) social.Provider {
+		return &social.OAuth2{
+			Driver: "acme", ClientID: "app-id", ClientSecret: secret, RedirectURL: app.URL + "/callback",
+			AuthURL: as.URL + "/authorize", TokenURL: as.URL + "/token", ProfileURL: as.URL + "/userinfo",
+			IssuerURL: as.URL, Scopes: []string{"profile", "email"},
+			Profile: func(raw map[string]any) social.User {
+				return social.User{
+					ID: social.String(raw, "sub"), Email: social.String(raw, "email"),
+					EmailVerified: social.Bool(raw, "email_verified"), Name: social.String(raw, "name"),
+				}
+			},
+		}
+	}
 }
 
 // browser follows redirects and keeps cookies, like the real thing.
@@ -180,46 +170,51 @@ func browser(t *testing.T) *http.Client {
 	return &http.Client{Jar: jar}
 }
 
-func TestEndToEndSignIn(t *testing.T) {
-	as := newAuthorizationServer(t)
-	app := newApplication(t, as)
-	client := browser(t)
+type signedIn struct {
+	ID, Email, Name, RedirectTo, Token string
+	Verified                           bool
+	Scopes                             []string
+}
 
-	response, err := client.Get(app.URL + "/login?to=/dashboard")
+func signIn(t *testing.T, client *http.Client, app *application, path string) (signedIn, *http.Response) {
+	t.Helper()
+
+	response, err := client.Get(app.URL + path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
 
-	var result struct {
-		ID, Email, Name, RedirectTo, Token string
-		Verified                           bool
-		Scopes                             []string
-	}
-	if err := json.NewDecoder(response.Body).Decode(&result); err != nil || response.StatusCode != http.StatusOK {
-		t.Fatalf("expected the callback to answer 200 JSON, got %d (%v)", response.StatusCode, err)
+	var result signedIn
+	if response.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
 	}
 
+	return result, response
+}
+
+func TestEndToEndSignIn(t *testing.T) {
+	as := newAuthorizationServer(t)
+	app := newApplication(t, oauth2Provider(as, "app-secret"))
+	client := browser(t)
+
+	result, response := signIn(t, client, app, "/login?to=/dashboard")
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected the callback to answer 200, got %d", response.StatusCode)
+	}
 	if result.ID != "person-1" || result.Email != "person@example.com" || !result.Verified || result.Name != "A Person" {
 		t.Errorf("wrong user: %+v", result)
 	}
-	if result.RedirectTo != "/dashboard" {
-		t.Errorf("redirectTo lost: %q", result.RedirectTo)
-	}
-	if result.Token != "the-token" {
-		t.Errorf("the token should be on the user: %q", result.Token)
-	}
-	if strings.Join(result.Scopes, " ") != "openid email" {
-		t.Errorf("granted scopes: %v", result.Scopes)
+	if result.RedirectTo != "/dashboard" || result.Token != "the-token" || strings.Join(result.Scopes, " ") != "profile email" {
+		t.Errorf("result: %+v", result)
 	}
 
 	// What the provider saw: PKCE with the matching verifier, the redirect
-	// URI, the scopes, and a nonce because openid was asked for.
-	if as.tokenSeen.Get("code_verifier") == "" || as.tokenSeen.Get("redirect_uri") != app.URL+"/callback" {
-		t.Errorf("token request: %v", as.tokenSeen)
-	}
-	if as.scope != "openid email" {
-		t.Errorf("scope sent: %q", as.scope)
+	// URI and the scopes.
+	if as.tokenSeen.Get("code_verifier") == "" || as.tokenSeen.Get("redirect_uri") != app.URL+"/callback" || as.scope != "profile email" {
+		t.Errorf("token request: %v, scope %q", as.tokenSeen, as.scope)
 	}
 
 	// The handshake is spent: the browser no longer holds the cookie.
@@ -234,15 +229,9 @@ func TestEndToEndSignIn(t *testing.T) {
 func TestEndToEndDenial(t *testing.T) {
 	as := newAuthorizationServer(t)
 	as.deny = true
-	app := newApplication(t, as)
+	app := newApplication(t, oauth2Provider(as, "app-secret"))
 
-	response, err := browser(t).Get(app.URL + "/login")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusForbidden {
+	if _, response := signIn(t, browser(t), app, "/login"); response.StatusCode != http.StatusForbidden {
 		t.Fatalf("a denial should reach the app as a denial, got %d", response.StatusCode)
 	}
 	if as.tokenSeen != nil {
@@ -252,15 +241,10 @@ func TestEndToEndDenial(t *testing.T) {
 
 func TestEndToEndReplayedCallbackIsRefused(t *testing.T) {
 	as := newAuthorizationServer(t)
-	app := newApplication(t, as)
+	app := newApplication(t, oauth2Provider(as, "app-secret"))
 	client := browser(t)
 
-	// A complete sign-in, then the same callback URL again with no handshake.
-	first, err := client.Get(app.URL + "/login")
-	if err != nil {
-		t.Fatal(err)
-	}
-	first.Body.Close()
+	_, first := signIn(t, client, app, "/login")
 	replayed, err := client.Get(first.Request.URL.String())
 	if err != nil {
 		t.Fatal(err)
@@ -274,21 +258,9 @@ func TestEndToEndReplayedCallbackIsRefused(t *testing.T) {
 
 func TestEndToEndWrongSecretFailsTheExchange(t *testing.T) {
 	as := newAuthorizationServer(t)
-	app := newApplication(t, as)
-	app.auth.Extend("acme", func() social.Provider {
-		return &social.OAuth2{
-			Driver: "acme", ClientID: "app-id", ClientSecret: "wrong", RedirectURL: app.URL + "/callback",
-			AuthURL: as.URL + "/authorize", TokenURL: as.URL + "/token", ProfileURL: as.URL + "/userinfo",
-		}
-	})
+	app := newApplication(t, oauth2Provider(as, "wrong"))
 
-	response, err := browser(t).Get(app.URL + "/login")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusBadGateway {
+	if _, response := signIn(t, browser(t), app, "/login"); response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected the exchange to fail, got %d", response.StatusCode)
 	}
 }

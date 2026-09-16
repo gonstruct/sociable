@@ -25,95 +25,59 @@ func (plainSealer) Open(sealed string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(sealed)
 }
 
-type fakeProvider struct{ configured bool }
+type fakeProvider struct {
+	configured bool
+	scopes     []string
+	tokenURL   string
+}
 
 func (fakeProvider) Name() string              { return "fake" }
 func (provider fakeProvider) Configured() bool { return provider.configured }
 
-func (fakeProvider) Config() *oauth2.Config {
+func (provider fakeProvider) Config() *oauth2.Config {
+	tokenURL := provider.tokenURL
+	if tokenURL == "" {
+		tokenURL = "https://provider.test/token"
+	}
+
 	return &oauth2.Config{
 		ClientID:    "client",
 		RedirectURL: "http://localhost/callback",
-		Endpoint: oauth2.Endpoint{
-			AuthURL:  "https://provider.test/authorize",
-			TokenURL: "https://provider.test/token",
-		},
+		Scopes:      provider.scopes,
+		Endpoint:    oauth2.Endpoint{AuthURL: "https://provider.test/authorize", TokenURL: tokenURL},
 	}
 }
 
 func (fakeProvider) User(_ context.Context, grant social.Grant) (*social.User, error) {
-	return &social.User{
-		ID:            "1",
-		Email:         "person@provider.test",
-		EmailVerified: true,
-		Raw:           grant,
-	}, nil
+	return &social.User{ID: "1", Email: "person@provider.test", EmailVerified: true, Raw: grant}, nil
 }
 
 // parameterisedProvider wants a Google-shaped refresh token, which only comes
 // back when these two ride along on the authorization URL.
 type parameterisedProvider struct{ fakeProvider }
 
-func (parameterisedProvider) Configured() bool { return true }
-
 func (parameterisedProvider) Parameters() []oauth2.AuthCodeOption {
-	return []oauth2.AuthCodeOption{
-		oauth2.AccessTypeOffline,
-		oauth2.SetAuthURLParam("prompt", "consent"),
-	}
+	return []oauth2.AuthCodeOption{oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent")}
 }
 
 // unprotectedProvider stands for the older providers that reject a challenge.
 type unprotectedProvider struct{ fakeProvider }
 
-func (unprotectedProvider) Configured() bool { return true }
-func (unprotectedProvider) UsesPKCE() bool   { return false }
+func (unprotectedProvider) UsesPKCE() bool { return false }
 
 // issuedProvider names itself, which is what makes RFC 9207's iss parameter
 // required rather than merely checked.
 type issuedProvider struct{ fakeProvider }
 
-func (issuedProvider) Configured() bool { return true }
-func (issuedProvider) Issuer() string   { return "https://provider.test" }
+func (issuedProvider) Issuer() string { return "https://provider.test" }
 
-// scopedProvider asks for one scope of its own, so the tests can tell adding
-// from replacing.
-type scopedProvider struct{ fakeProvider }
-
-func (scopedProvider) Configured() bool { return true }
-
-func (scopedProvider) Config() *oauth2.Config {
-	config := fakeProvider{}.Config()
-	config.Scopes = []string{"profile"}
-
-	return config
-}
-
-// exchangingProvider talks to a token endpoint that answers, for the tests
-// that need to get past the exchange.
-type exchangingProvider struct {
-	fakeProvider
-
-	tokenURL string
-}
-
-func (exchangingProvider) Configured() bool { return true }
-
-func (provider exchangingProvider) Config() *oauth2.Config {
-	config := fakeProvider{}.Config()
-	config.Endpoint.TokenURL = provider.tokenURL
-
-	return config
-}
+func configured() fakeProvider { return fakeProvider{configured: true} }
 
 // setup builds a registry with one provider under "fake".
-func setup(t *testing.T, construct func() social.Provider) *social.Social {
+func setup(t *testing.T, provider social.Provider) *social.Social {
 	t.Helper()
 
-	auth, err := social.New(social.Configuration{
-		Sealer:  plainSealer{},
-		Drivers: social.Drivers{"fake": construct},
-	})
+	auth, err := social.New(social.Configuration{Sealer: plainSealer{}, Drivers: social.Drivers{"fake": provider}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,39 +85,29 @@ func setup(t *testing.T, construct func() social.Provider) *social.Social {
 	return auth
 }
 
-func fake(configured bool) func() social.Provider {
-	return func() social.Provider { return fakeProvider{configured: configured} }
-}
-
 // redirect runs Redirect through a handler and returns what the browser
 // would have received: the Location and the handshake cookie.
-func redirect(t *testing.T, auth *social.Social, redirectTo string, shape ...func(*social.Flow) *social.Flow) *httptest.ResponseRecorder {
+func redirect(t *testing.T, auth *social.Social, options ...social.Option) *httptest.ResponseRecorder {
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/login", nil)
-
-	flow := auth.Driver(recorder, request, "fake")
-	for _, apply := range shape {
-		flow = apply(flow)
-	}
-	if err := flow.Redirect(redirectTo); err != nil {
+	if err := auth.Redirect(recorder, httptest.NewRequest(http.MethodGet, "/login", nil), "fake", options...); err != nil {
 		t.Fatalf("redirect: %v", err)
 	}
 
 	return recorder
 }
 
-// callback runs User for a callback request, carrying the cookies a previous
-// response set. It returns the recorder too, because the handshake cookie
+// callback runs Callback for a request, carrying the cookies a previous
+// response set, and returns the recorder too because the handshake cookie
 // must be cleared by it.
 func callback(
 	t *testing.T,
 	auth *social.Social,
 	target string,
 	from *httptest.ResponseRecorder,
-	shape ...func(*social.Flow) *social.Flow,
-) (*social.User, error, *httptest.ResponseRecorder) {
+	options ...social.Option,
+) (*social.Result, error, *httptest.ResponseRecorder) {
 	t.Helper()
 
 	recorder := httptest.NewRecorder()
@@ -164,13 +118,9 @@ func callback(
 		}
 	}
 
-	flow := auth.Driver(recorder, request, "fake")
-	for _, apply := range shape {
-		flow = apply(flow)
-	}
-	user, err := flow.User()
+	result, err := auth.Callback(recorder, request, "fake", options...)
 
-	return user, err, recorder
+	return result, err, recorder
 }
 
 // issuedQuery is the authorization URL the driver sent the browser to, taken

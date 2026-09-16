@@ -13,7 +13,7 @@ import (
 )
 
 func TestGitHubProviderDefaults(t *testing.T) {
-	provider := New(Options{ClientID: "id", ClientSecret: "secret", RedirectURL: "http://app/cb"})().(*provider)
+	provider := New(Options{ClientID: "id", ClientSecret: "secret", RedirectURL: "http://app/cb"}).(*provider)
 
 	if provider.Name() != "github" || !provider.Configured() || len(provider.Scopes) != 2 {
 		t.Fatalf("basics: %+v", provider.OAuth2)
@@ -35,7 +35,7 @@ func TestGitHubProfileAndEmailFallback(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	provider := New(Options{ClientID: "id"})().(*provider)
+	provider := New(Options{ClientID: "id"}).(*provider)
 	provider.ProfileURL = server.URL + "/user"
 	provider.emailsURL = server.URL + "/user/emails"
 

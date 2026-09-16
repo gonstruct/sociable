@@ -33,7 +33,8 @@ type OAuth2 struct {
 	// access_type=offline for a Google refresh token.
 	Extra map[string]string
 
-	// IssuerURL, when set, makes the iss parameter of RFC 9207 required.
+	// IssuerURL, when set, makes the iss parameter of RFC 9207 required on
+	// the callback. Only set it for a provider that sends the parameter.
 	IssuerURL string
 
 	// WithoutPKCE opts out for a provider that rejects the challenge.

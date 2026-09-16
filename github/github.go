@@ -29,30 +29,28 @@ type provider struct {
 	emailsURL string
 }
 
-// New is a constructor for a social.Drivers entry.
-func New(options Options) func() social.Provider {
-	return func() social.Provider {
-		scopes := options.Scopes
-		if len(scopes) == 0 {
-			scopes = []string{"read:user", "user:email"}
-		}
-
-		return &provider{emailsURL: "https://api.github.com/user/emails", OAuth2: &social.OAuth2{
-			Driver:       Name,
-			ClientID:     options.ClientID,
-			ClientSecret: options.ClientSecret,
-			RedirectURL:  options.RedirectURL,
-			AuthURL:      "https://github.com/login/oauth/authorize",
-			TokenURL:     "https://github.com/login/oauth/access_token",
-			ProfileURL:   "https://api.github.com/user",
-			Scopes:       scopes,
-		}}
+// New is a provider for a social.Drivers entry.
+func New(options Options) social.Provider {
+	scopes := options.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{"read:user", "user:email"}
 	}
+
+	return &provider{emailsURL: "https://api.github.com/user/emails", OAuth2: &social.OAuth2{
+		Driver:       Name,
+		ClientID:     options.ClientID,
+		ClientSecret: options.ClientSecret,
+		RedirectURL:  options.RedirectURL,
+		AuthURL:      "https://github.com/login/oauth/authorize",
+		TokenURL:     "https://github.com/login/oauth/access_token",
+		ProfileURL:   "https://api.github.com/user",
+		Scopes:       scopes,
+	}}
 }
 
 // User reads the profile and, when the profile hides the address, the
 // primary verified one from the emails endpoint.
-func (self *provider) User(ctx context.Context, grant social.Grant) (*social.User, error) {
+func (self *provider) User(_ context.Context, grant social.Grant) (*social.User, error) {
 	raw, err := social.FetchJSON(grant, self.ProfileURL)
 	if err != nil {
 		return nil, err
