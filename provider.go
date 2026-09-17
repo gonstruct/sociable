@@ -1,69 +1,165 @@
-package social
+package sociable
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"golang.org/x/oauth2"
 )
 
-// Provider is what a driver must supply: where to send the browser, and how to
-// turn a grant into a user. Everything else about the flow is this package's,
-// and everything a provider may change about it is an interface below.
+// Provider is what a driver is made of: the oauth2 configuration it was
+// issued, and how to read the person behind a token. The flow around those two
+// things is this package's.
+//
+// The client already presents the token, so a provider reads its profile
+// with a plain Get.
 type Provider interface {
-	// Name identifies the driver in routes and logs.
-	Name() string
-
-	// Config carries the endpoints, credentials and default scopes. The flow
-	// copies it before changing anything, so returning the same pointer on
-	// every call is safe.
 	Config() *oauth2.Config
-
-	// Configured reports whether the credentials are present.
-	Configured() bool
-
-	// User reads the provider's profile and normalises it.
-	User(context context.Context, grant Grant) (*User, error)
+	User(ctx context.Context, client *http.Client, token *oauth2.Token) (*User, error)
 }
 
-// Grant is what the flow obtained, handed to the provider so it can read the
-// profile and check anything the token carries.
-//
-// Client already presents the token, so a provider reads its profile with a
-// plain Get. Nonce is the value that was sent on the authorization request
-// when the provider was asked for the openid scope. A provider that reads an
-// ID token must check the nonce claim against it: OpenID Connect Core section
-// 3.1.3.7 makes that the client's job, and it is what stops a token issued for
-// one sign-in being replayed into another.
-type Grant struct {
-	Token  *oauth2.Token
-	Nonce  string
-	Client *http.Client
+// Factory builds a Provider from the credentials configured under its name.
+type Factory func(credentials Credentials) Provider
+
+// Redirector is a provider that sends the browser itself, for a sign-in that
+// is not an authorization URL: a widget, a form. It receives the callback URL
+// and the state the callback must bring back.
+type Redirector interface {
+	Redirect(w http.ResponseWriter, r *http.Request, callback, state string) error
 }
 
-// Parameterised is implemented by a provider that needs more on the
-// authorization URL than the flow itself puts there: access_type and prompt for
-// a Google refresh token, audience for an API-scoped token, a provider's own
-// invention. A provider that stays silent sends none.
-type Parameterised interface {
-	Parameters() []oauth2.AuthCodeOption
+// Authenticator is a provider that reads the person from the callback itself,
+// with no code to exchange.
+type Authenticator interface {
+	Callback(r *http.Request) (*User, error)
 }
 
-// Unprotected is implemented by a provider that cannot do PKCE. Some older
-// providers reject the challenge outright, and a confidential client with a
-// secret is not defenceless without it.
-//
-// PKCE is on for every provider that stays silent. OAuth 2.1 makes it mandatory
-// for all clients, so opting out should be a decision somebody wrote down.
+// Unprotected is a provider that cannot do PKCE. Every provider that stays
+// silent does it.
 type Unprotected interface {
 	UsesPKCE() bool
 }
 
-// Issued is implemented by a provider whose authorization responses carry the
-// iss parameter from RFC 9207. Implementing it makes the parameter required:
-// the point of the extension is that a client which expects an issuer rejects a
-// response without one, which is what defeats a mix-up attack between two
-// authorization servers the same client talks to.
-type Issued interface {
-	Issuer() string
+// OAuth2 is a provider described by its endpoints and a profile mapping, which
+// is all most providers need.
+type OAuth2 struct {
+	Credentials Credentials
+	Endpoint    oauth2.Endpoint
+
+	// Scopes are the defaults, for credentials that name none.
+	Scopes []string
+
+	// ProfileURL is fetched with the token, and Map turns the document into a
+	// User. Raw is filled in when Map leaves it empty, or when there is no
+	// Map at all.
+	ProfileURL string
+	Map        func(raw map[string]any) User
+
+	WithoutPKCE bool
+}
+
+func (self OAuth2) Config() *oauth2.Config {
+	scopes := self.Credentials.Scopes
+	if len(scopes) == 0 {
+		scopes = self.Scopes
+	}
+
+	return &oauth2.Config{
+		ClientID:     self.Credentials.ClientID,
+		ClientSecret: self.Credentials.ClientSecret,
+		Endpoint:     self.Endpoint,
+		Scopes:       scopes,
+	}
+}
+
+func (self OAuth2) UsesPKCE() bool { return !self.WithoutPKCE }
+
+func (self OAuth2) User(ctx context.Context, client *http.Client, _ *oauth2.Token) (*User, error) {
+	var raw map[string]any
+	if err := GetJSON(ctx, client, self.ProfileURL, &raw); err != nil {
+		return nil, err
+	}
+
+	user := User{}
+	if self.Map != nil {
+		user = self.Map(raw)
+	}
+
+	if user.Raw == nil {
+		user.Raw = raw
+	}
+
+	return &user, nil
+}
+
+// GetJSON fetches a JSON document into any value, with a client that
+// presents the token. A status other than 200 is an error.
+func GetJSON(ctx context.Context, client *http.Client, url string, into any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+
+	request.Header.Set("Accept", "application/json")
+
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("get %s: %w", url, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("get %s: status %d", url, response.StatusCode)
+	}
+
+	if err := json.NewDecoder(response.Body).Decode(into); err != nil {
+		return fmt.Errorf("decode %s: %w", url, err)
+	}
+
+	return nil
+}
+
+// String reads a string at a dotted path, such as "picture.data.url". A number
+// is formatted, so a numeric id reads as one.
+func String(raw map[string]any, path string) string {
+	switch value := lookup(raw, path).(type) {
+	case string:
+		return value
+	case float64:
+		if value == float64(int64(value)) {
+			return strconv.FormatInt(int64(value), 10)
+		}
+
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(value)
+	default:
+		return ""
+	}
+}
+
+// Bool reads a boolean at a dotted path.
+func Bool(raw map[string]any, path string) bool {
+	value, _ := lookup(raw, path).(bool)
+
+	return value
+}
+
+func lookup(raw map[string]any, path string) any {
+	var current any = raw
+
+	for _, key := range strings.Split(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+
+		current = object[key]
+	}
+
+	return current
 }

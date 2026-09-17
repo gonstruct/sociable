@@ -1,161 +1,240 @@
-package social_test
+package sociable_test
 
 import (
-	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
-	"time"
 
-	"github.com/gonstruct/social"
+	"github.com/gonstruct/sociable"
 	"golang.org/x/oauth2"
 )
 
-// plainSealer stands in for the application's encryption. The flow only
-// needs the round trip, so most tests do not depend on a cipher.
-type plainSealer struct{}
+// authorizationServer is a fake provider: it hands out a code, exchanges it for
+// a token when the PKCE verifier and the secret are right, and serves a
+// profile to a bearer of that token.
+type authorizationServer struct {
+	*httptest.Server
 
-func (plainSealer) Seal(plain []byte) (string, error) {
-	return base64.RawURLEncoding.EncodeToString(plain), nil
+	mutex     sync.Mutex
+	secret    string
+	challenge string
+	scope     string
+	profile   map[string]any
+	deny      bool
+	requests  []url.Values
 }
 
-func (plainSealer) Open(sealed string) ([]byte, error) {
-	return base64.RawURLEncoding.DecodeString(sealed)
-}
-
-type fakeProvider struct {
-	configured bool
-	scopes     []string
-	tokenURL   string
-}
-
-func (fakeProvider) Name() string              { return "fake" }
-func (provider fakeProvider) Configured() bool { return provider.configured }
-
-func (provider fakeProvider) Config() *oauth2.Config {
-	tokenURL := provider.tokenURL
-	if tokenURL == "" {
-		tokenURL = "https://provider.test/token"
-	}
-
-	return &oauth2.Config{
-		ClientID:    "client",
-		RedirectURL: "http://localhost/callback",
-		Scopes:      provider.scopes,
-		Endpoint:    oauth2.Endpoint{AuthURL: "https://provider.test/authorize", TokenURL: tokenURL},
-	}
-}
-
-func (fakeProvider) User(_ context.Context, grant social.Grant) (*social.User, error) {
-	return &social.User{ID: "1", Email: "person@provider.test", EmailVerified: true, Raw: grant}, nil
-}
-
-// parameterisedProvider wants a Google-shaped refresh token, which only comes
-// back when these two ride along on the authorization URL.
-type parameterisedProvider struct{ fakeProvider }
-
-func (parameterisedProvider) Parameters() []oauth2.AuthCodeOption {
-	return []oauth2.AuthCodeOption{oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent")}
-}
-
-// unprotectedProvider stands for the older providers that reject a challenge.
-type unprotectedProvider struct{ fakeProvider }
-
-func (unprotectedProvider) UsesPKCE() bool { return false }
-
-// issuedProvider names itself, which is what makes RFC 9207's iss parameter
-// required rather than merely checked.
-type issuedProvider struct{ fakeProvider }
-
-func (issuedProvider) Issuer() string { return "https://provider.test" }
-
-func configured() fakeProvider { return fakeProvider{configured: true} }
-
-// setup builds a registry with one provider under "fake".
-func setup(t *testing.T, provider social.Provider) *social.Social {
+func newAuthorizationServer(t *testing.T) *authorizationServer {
 	t.Helper()
 
-	auth, err := social.New(social.Configuration{Sealer: plainSealer{}, Drivers: social.Drivers{"fake": provider}})
-	if err != nil {
-		t.Fatal(err)
+	as := &authorizationServer{
+		secret:  "s3cret",
+		profile: map[string]any{"id": float64(42), "login": "arjen", "email": "arjen@example.test"},
 	}
 
-	return auth
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", as.authorize)
+	mux.HandleFunc("/token", as.token)
+	mux.HandleFunc("/me", as.me)
+
+	as.Server = httptest.NewServer(mux)
+	t.Cleanup(as.Close)
+
+	return as
 }
 
-// redirect runs Redirect through a handler and returns what the browser
-// would have received: the Location and the handshake cookie.
-func redirect(t *testing.T, auth *social.Social, options ...social.Option) *httptest.ResponseRecorder {
-	t.Helper()
+func (as *authorizationServer) authorize(w http.ResponseWriter, r *http.Request) {
+	as.mutex.Lock()
+	as.requests = append(as.requests, r.URL.Query())
+	as.challenge = r.URL.Query().Get("code_challenge")
+	as.mutex.Unlock()
 
-	recorder := httptest.NewRecorder()
-	if err := auth.Redirect(recorder, httptest.NewRequest(http.MethodGet, "/login", nil), "fake", options...); err != nil {
-		t.Fatalf("redirect: %v", err)
+	back, _ := url.Parse(r.URL.Query().Get("redirect_uri"))
+	query := url.Values{"state": {r.URL.Query().Get("state")}}
+
+	if as.deny {
+		query.Set("error", "access_denied")
+		query.Set("error_description", "the person said no")
+	} else {
+		query.Set("code", "c0de")
 	}
 
-	return recorder
+	back.RawQuery = query.Encode()
+	http.Redirect(w, r, back.String(), http.StatusFound)
 }
 
-// callback runs Callback for a request, carrying the cookies a previous
-// response set, and returns the recorder too because the handshake cookie
-// must be cleared by it.
-func callback(
-	t *testing.T,
-	auth *social.Social,
-	target string,
-	from *httptest.ResponseRecorder,
-	options ...social.Option,
-) (*social.Result, error, *httptest.ResponseRecorder) {
-	t.Helper()
+func (as *authorizationServer) token(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
 
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, target, nil)
-	if from != nil {
-		for _, cookie := range from.Result().Cookies() {
-			request.AddCookie(cookie)
+	if r.PostForm.Get("code") != "c0de" || r.PostForm.Get("client_secret") != as.secret {
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+
+		return
+	}
+
+	as.mutex.Lock()
+	challenge := as.challenge
+	as.mutex.Unlock()
+
+	if challenge != "" {
+		sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
+		if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+			http.Error(w, `{"error":"invalid_grant","error_description":"bad verifier"}`, http.StatusBadRequest)
+
+			return
 		}
 	}
 
-	result, err := auth.Callback(recorder, request, "fake", options...)
-
-	return result, err, recorder
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token": "t0ken", "token_type": "bearer", "refresh_token": "r3fresh", "expires_in": 3600, "scope": as.scope,
+	})
 }
 
-// issuedQuery is the authorization URL the driver sent the browser to, taken
-// apart.
-func issuedQuery(t *testing.T, recorder *httptest.ResponseRecorder) url.Values {
+func (as *authorizationServer) me(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") != "Bearer t0ken" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(as.profile)
+}
+
+func (as *authorizationServer) lastRequest() url.Values {
+	as.mutex.Lock()
+	defer as.mutex.Unlock()
+
+	return as.requests[len(as.requests)-1]
+}
+
+func (as *authorizationServer) factory() sociable.Factory {
+	return func(credentials sociable.Credentials) sociable.Provider {
+		return sociable.OAuth2{
+			Credentials: credentials,
+			Endpoint:    oauth2.Endpoint{AuthURL: as.URL + "/authorize", TokenURL: as.URL + "/token"},
+			Scopes:      []string{"profile"},
+			ProfileURL:  as.URL + "/me",
+			Map: func(raw map[string]any) sociable.User {
+				return sociable.User{ID: sociable.String(raw, "id"), Nickname: sociable.String(raw, "login"), Email: sociable.String(raw, "email")}
+			},
+		}
+	}
+}
+
+// application is a site with the two handlers, answering the callback with the
+// user or the error as JSON so a test can read what happened.
+type application struct {
+	*httptest.Server
+
+	auth   *sociable.Manager
+	before func(sociable.Flow) sociable.Flow
+}
+
+type outcome struct {
+	User  *sociable.User `json:"user"`
+	Error string         `json:"error"`
+}
+
+func newApplication(t *testing.T, configure func(config *sociable.Config), extend func(auth *sociable.Manager)) *application {
 	t.Helper()
 
-	parsed, err := url.Parse(recorder.Header().Get("Location"))
+	app := &application{before: func(flow sociable.Flow) sociable.Flow { return flow }}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/{driver}", func(w http.ResponseWriter, r *http.Request) {
+		if err := app.before(app.auth.Driver(r.PathValue("driver"))).Redirect(w, r); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+	})
+	mux.HandleFunc("/auth/{driver}/callback", func(w http.ResponseWriter, r *http.Request) {
+		user, err := app.before(app.auth.Driver(r.PathValue("driver"))).User(w, r)
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(outcome{Error: classify(err)})
+
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(outcome{User: user})
+	})
+
+	app.Server = httptest.NewServer(mux)
+	t.Cleanup(app.Close)
+
+	config := sociable.Config{
+		Key: "test-key",
+		URL: app.URL,
+		Drivers: sociable.Drivers{
+			"acme": {ClientID: "client", ClientSecret: "s3cret", Redirect: "/auth/acme/callback"},
+		},
+	}
+	if configure != nil {
+		configure(&config)
+	}
+
+	auth, err := sociable.New(config)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	app.auth = auth
+	extend(auth)
+
+	return app
+}
+
+func classify(err error) string {
+	switch {
+	case errors.Is(err, sociable.ErrAccessDenied):
+		return "denied"
+	case errors.Is(err, sociable.ErrInvalidState):
+		return "state"
+	case errors.Is(err, sociable.ErrExchange):
+		return "exchange"
+	case errors.Is(err, sociable.ErrIDToken):
+		return "idtoken"
+	case errors.Is(err, sociable.ErrUnknownDriver):
+		return "unknown"
+	default:
+		return err.Error()
+	}
+}
+
+func browser(t *testing.T) *http.Client {
+	t.Helper()
+
+	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return parsed.Query()
+	return &http.Client{Jar: jar}
 }
 
-func issuedState(t *testing.T, recorder *httptest.ResponseRecorder) string {
+func signIn(t *testing.T, client *http.Client, app *application, driver string) outcome {
 	t.Helper()
 
-	return issuedQuery(t, recorder).Get("state")
-}
+	response, err := client.Get(app.URL + "/auth/" + driver)
+	if err != nil {
+		t.Fatalf("sign in: %v", err)
+	}
+	defer response.Body.Close()
 
-// tokenEndpoint answers an exchange with the smallest token RFC 6749 section
-// 5.1 allows, so a test can reach what happens after one.
-func tokenEndpoint(t *testing.T) string {
-	t.Helper()
+	var result outcome
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode outcome: %v", err)
+	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"access_token":"granted","token_type":"Bearer"}`))
-	}))
-	t.Cleanup(server.Close)
-
-	return server.URL
-}
-
-func expired() social.CookieOptions {
-	return social.CookieOptions{Lifetime: -time.Second}
+	return result
 }

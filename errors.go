@@ -1,54 +1,42 @@
-package social
+package sociable
 
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 var (
-	// ErrNotConfigured means the driver has no credentials. Environments
-	// without them should refuse the route rather than redirect somewhere
-	// half-built.
-	ErrNotConfigured = errors.New("social: driver is not configured")
+	// ErrUnknownDriver means no driver is configured under that name.
+	ErrUnknownDriver = errors.New("sociable: unknown driver")
 
-	// ErrNoHandshake means this callback was never started here, was already
-	// used, or was started too long ago. All three are indistinguishable to the
-	// caller on purpose.
-	ErrNoHandshake = errors.New("social: no handshake for this callback")
+	// ErrNotConfigured means the driver has no credentials or no endpoints,
+	// because discovery failed. Refuse the route rather than redirect.
+	ErrNotConfigured = errors.New("sociable: driver not configured")
 
-	// ErrStateMismatch means the state did not match the one issued, which is
-	// what RFC 6749 section 10.12 asks a client to check.
-	ErrStateMismatch = errors.New("social: state does not match")
+	// ErrInvalidState means the callback was not started here, was already
+	// used, expired, or came back with another state.
+	ErrInvalidState = errors.New("sociable: invalid state")
 
-	// ErrIssuerMismatch means the authorization server that answered is not the
-	// one the browser was sent to. RFC 9207 adds the iss parameter for exactly
-	// this, and a client that expects it must reject a response without it.
-	ErrIssuerMismatch = errors.New("social: the response came from another issuer")
+	// ErrAuthorization is what every provider refusal matches.
+	ErrAuthorization = errors.New("sociable: the provider refused")
 
-	// ErrExchange means the authorization code could not be exchanged, or what
-	// came back was not a token this package can use.
-	ErrExchange = errors.New("social: failed to exchange the authorization code")
+	// ErrAccessDenied is the refusal that means the person said no.
+	ErrAccessDenied = fmt.Errorf("%w: access denied", ErrAuthorization)
 
-	// ErrProfile means the provider would not describe the user.
-	ErrProfile = errors.New("social: failed to read the profile")
+	// ErrExchange means the code could not be exchanged for a token, or the
+	// token is not usable.
+	ErrExchange = errors.New("sociable: token exchange failed")
 
-	// ErrUnknownDriver means no provider is registered under that name.
-	ErrUnknownDriver = errors.New("social: unknown driver")
+	// ErrIDToken means the ID token failed verification: signature, issuer,
+	// audience, expiry or nonce.
+	ErrIDToken = errors.New("sociable: the id token could not be verified")
 
-	// ErrAuthorization means the provider refused, and said so in the redirect
-	// rather than by failing. Match it to catch every refusal.
-	ErrAuthorization = errors.New("social: the provider refused the authorization request")
-
-	// ErrAccessDenied is the refusal worth telling apart: the person said no,
-	// or the provider decided on their behalf. It is not a fault, and a
-	// sign-in page should say so differently than it says something broke.
-	ErrAccessDenied = fmt.Errorf("%w: access_denied", ErrAuthorization)
+	// ErrProfile means the provider would not describe the person.
+	ErrProfile = errors.New("sociable: could not read the profile")
 )
 
-// AuthorizationError is the provider refusing in the shape RFC 6749 section
-// 4.1.2.1 requires: a code from a fixed set, and prose that may be aimed at a
-// developer rather than at the person signing in.
+// AuthorizationError is a refusal the provider sent back on the redirect, in
+// the shape RFC 6749 section 4.1.2.1 defines.
 type AuthorizationError struct {
 	Code        string
 	Description string
@@ -56,21 +44,19 @@ type AuthorizationError struct {
 }
 
 func (self *AuthorizationError) Error() string {
-	message := "social: " + self.Code
-
-	if self.Description != "" {
-		message += ": " + self.Description
+	if self.Description == "" {
+		return "sociable: the provider refused: " + self.Code
 	}
 
-	return message
+	return "sociable: the provider refused: " + self.Code + ": " + self.Description
 }
 
-// Is answers for the sentinels above, so a caller can match every refusal with
-// ErrAuthorization or single out the one that is not a fault.
+// Is makes every refusal match ErrAuthorization, and access_denied match
+// ErrAccessDenied as well.
 func (self *AuthorizationError) Is(target error) bool {
-	if errors.Is(target, ErrAccessDenied) {
-		return strings.EqualFold(self.Code, "access_denied")
+	if target == ErrAccessDenied {
+		return self.Code == "access_denied"
 	}
 
-	return errors.Is(target, ErrAuthorization)
+	return target == ErrAuthorization
 }

@@ -1,44 +1,31 @@
-package social
+package sociable
 
-import (
-	"strings"
+import "golang.org/x/oauth2"
 
-	"golang.org/x/oauth2"
-)
-
-// User is the identity a driver resolves, in the shape every driver must
-// produce. It is deliberately small: the fields every provider has, plus the
-// provider's own payload for everything else.
+// User is who the provider vouches for.
 type User struct {
-	ID            string
+	// ID is the provider's stable identifier for this person. Store this,
+	// not the email, which can change.
+	ID string
+
 	Nickname      string
 	Name          string
 	Email         string
 	EmailVerified bool
 	Avatar        string
 
-	// Raw is the provider's own profile, as it arrived.
-	Raw any
+	// Raw is the provider's own document: the profile, or the ID token's
+	// claims.
+	Raw map[string]any
 
-	// Token is what the identity was read with, filled in by the flow rather
-	// than by the driver. A caller that wants to keep talking to the provider,
-	// or to store a refresh token, has it without running the exchange twice.
+	// Token carries the access token, the refresh token when the provider
+	// issued one, and the expiry.
 	Token *oauth2.Token
 
-	// ApprovedScopes is what the provider actually granted, which RFC 6749
-	// section 5.1 allows to differ from what was asked for. A feature that
-	// depends on a scope should check here rather than assume.
+	// ApprovedScopes are the scopes the provider granted, which need not be
+	// the ones that were asked for.
 	ApprovedScopes []string
-}
 
-// HasScope reports whether the provider granted a scope. It is the question
-// worth asking before using one, since asking is not the same as receiving.
-func (self *User) HasScope(scope string) bool {
-	for _, granted := range self.ApprovedScopes {
-		if strings.EqualFold(granted, scope) {
-			return true
-		}
-	}
-
-	return false
+	// State is what the call site put in with WithState.
+	State map[string]string
 }
