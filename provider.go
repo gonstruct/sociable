@@ -2,164 +2,98 @@ package sociable
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"strconv"
-	"strings"
 
+	"github.com/valyala/fastjson"
 	"golang.org/x/oauth2"
 )
 
-// Provider is what a driver is made of: the oauth2 configuration it was
-// issued, and how to read the person behind a token. The flow around those two
-// things is this package's.
-//
-// The client already presents the token, so a provider reads its profile
-// with a plain Get.
+// Provider is what a driver is made of, Socialite's four abstract methods:
+// where to send the browser, what to ask for, how to read the raw document
+// behind a token, and how to map it. The provider is a zero value, so what
+// it needs to know comes in through the credentials.
 type Provider interface {
-	Config() *oauth2.Config
-	User(ctx context.Context, client *http.Client, token *oauth2.Token) (*User, error)
+	Endpoint(credentials Credentials) oauth2.Endpoint
+	Scoping() Scoping
+
+	// GetUserByToken fetches the provider's document for the person. The
+	// client already presents the token, the way Socialite's getHttpClient
+	// does. Socialite's getUserByToken.
+	GetUserByToken(ctx context.Context, client *http.Client, token *oauth2.Token, credentials Credentials) (*fastjson.Value, error)
+
+	// MapUserToStruct turns that document into a User. The driver calls it,
+	// and fills in the token afterwards. Socialite's mapUserToObject.
+	MapUserToStruct(json *fastjson.Value) (*User, error)
 }
 
-// Factory builds a Provider from the credentials configured under its name.
-type Factory func(credentials Credentials) Provider
-
-// Redirector is a provider that sends the browser itself, for a sign-in that
-// is not an authorization URL: a widget, a form. It receives the callback URL
-// and the state the callback must bring back.
-type Redirector interface {
-	Redirect(w http.ResponseWriter, r *http.Request, callback, state string) error
+type Scoping struct {
+	Scopes    []string
+	Separator string
 }
 
-// Authenticator is a provider that reads the person from the callback itself,
-// with no code to exchange.
-type Authenticator interface {
-	Callback(r *http.Request) (*User, error)
+// User is who the provider vouches for.
+type User struct {
+	// ID is the provider's stable identifier for this person. Store this,
+	// not the email, which can change.
+	ID string
+
+	Nickname      string
+	Name          string
+	Email         string
+	EmailVerified bool
+	Avatar        string
+
+	// Token carries the access token, the refresh token when the provider
+	// issued one, and the expiry.
+	Token *oauth2.Token
+
+	// ApprovedScopes are the scopes the provider granted, which need not be
+	// the ones that were asked for.
+	ApprovedScopes []string
 }
 
-// Unprotected is a provider that cannot do PKCE. Every provider that stays
-// silent does it.
-type Unprotected interface {
+// unprotectedProvider is a provider that cannot do PKCE. Every provider that
+// stays silent does it.
+type unprotectedProvider interface {
 	UsesPKCE() bool
 }
 
-// OAuth2 is a provider described by its endpoints and a profile mapping, which
-// is all most providers need.
-type OAuth2 struct {
-	Credentials Credentials
-	Endpoint    oauth2.Endpoint
-
-	// Scopes are the defaults, for credentials that name none.
-	Scopes []string
-
-	// ProfileURL is fetched with the token, and Map turns the document into a
-	// User. Raw is filled in when Map leaves it empty, or when there is no
-	// Map at all.
-	ProfileURL string
-	Map        func(raw map[string]any) User
-
-	WithoutPKCE bool
+// openIDProvider is an OpenID Connect issuer. The ID token it returns with
+// the access token is verified for signature, issuer, audience, expiry and
+// nonce before the person is trusted.
+type openIDProvider interface {
+	Issuer() string
 }
 
-func (self OAuth2) Config() *oauth2.Config {
-	scopes := self.Credentials.Scopes
-	if len(scopes) == 0 {
-		scopes = self.Scopes
-	}
-
-	return &oauth2.Config{
-		ClientID:     self.Credentials.ClientID,
-		ClientSecret: self.Credentials.ClientSecret,
-		Endpoint:     self.Endpoint,
-		Scopes:       scopes,
-	}
-}
-
-func (self OAuth2) UsesPKCE() bool { return !self.WithoutPKCE }
-
-func (self OAuth2) User(ctx context.Context, client *http.Client, _ *oauth2.Token) (*User, error) {
-	var raw map[string]any
-	if err := GetJSON(ctx, client, self.ProfileURL, &raw); err != nil {
+// fetch is a provider's GET of a JSON document, with the client that presents
+// the token. Socialite's getHttpClient()->get() and json_decode in one.
+func fetch(ctx context.Context, client *http.Client, url string, headers map[string]string) (*fastjson.Value, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
 		return nil, err
 	}
 
-	user := User{}
-	if self.Map != nil {
-		user = self.Map(raw)
-	}
-
-	if user.Raw == nil {
-		user.Raw = raw
-	}
-
-	return &user, nil
-}
-
-// GetJSON fetches a JSON document into any value, with a client that
-// presents the token. A status other than 200 is an error.
-func GetJSON(ctx context.Context, client *http.Client, url string, into any) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-
 	request.Header.Set("Accept", "application/json")
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("get %s: %w", url, err)
+		return nil, err
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("get %s: status %d", url, response.StatusCode)
+		return nil, fmt.Errorf("get %s: status %d", url, response.StatusCode)
 	}
 
-	if err := json.NewDecoder(response.Body).Decode(into); err != nil {
-		return fmt.Errorf("decode %s: %w", url, err)
+	body, err := io.ReadAll(io.LimitReader(response.Body, 10<<20))
+	if err != nil {
+		return nil, err
 	}
 
-	return nil
-}
-
-// String reads a string at a dotted path, such as "picture.data.url". A number
-// is formatted, so a numeric id reads as one.
-func String(raw map[string]any, path string) string {
-	switch value := lookup(raw, path).(type) {
-	case string:
-		return value
-	case float64:
-		if value == float64(int64(value)) {
-			return strconv.FormatInt(int64(value), 10)
-		}
-
-		return strconv.FormatFloat(value, 'f', -1, 64)
-	case bool:
-		return strconv.FormatBool(value)
-	default:
-		return ""
-	}
-}
-
-// Bool reads a boolean at a dotted path.
-func Bool(raw map[string]any, path string) bool {
-	value, _ := lookup(raw, path).(bool)
-
-	return value
-}
-
-func lookup(raw map[string]any, path string) any {
-	var current any = raw
-
-	for _, key := range strings.Split(path, ".") {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-
-		current = object[key]
-	}
-
-	return current
+	return fastjson.ParseBytes(body)
 }

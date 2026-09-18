@@ -1,26 +1,27 @@
 # sociable
 
-Authenticate with Google, GitHub, GitLab, Facebook, LinkedIn, Bitbucket,
-Slack, Twitch, X, or any OAuth 2 or OpenID Connect provider, on `net/http`.
-You get back who the person is and a token to use.
+Social sign-in on `net/http`, shaped after Laravel Socialite. You get back
+who the person is and a token to use.
 
 ```go
-sociable.Configure(sociable.Config{
-    Key: os.Getenv("APP_KEY"),
-    Drivers: sociable.Drivers{
-        "github": {ClientID: id, ClientSecret: secret, Redirect: "/auth/github/callback"},
-        "google": {ClientID: id, ClientSecret: secret, Redirect: "/auth/google/callback"},
-    },
-})
+social := sociable.New(
+    sociable.WithKey(os.Getenv("APP_KEY")),
+    sociable.WithAPIURL("https://api.example"),
+    sociable.WithDriver[sociable.GoogleProvider]("google", sociable.Credentials{
+        ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+        ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+        RedirectURL:  "/auth/google/callback",
+    }),
+)
 ```
 
 ```go
-http.HandleFunc("/auth/github", func(w http.ResponseWriter, r *http.Request) {
-    sociable.Driver("github").Redirect(w, r)
+http.HandleFunc("/auth/google", func(w http.ResponseWriter, r *http.Request) {
+    social.Driver("google").Redirect(w, r)
 })
 
-http.HandleFunc("/auth/github/callback", func(w http.ResponseWriter, r *http.Request) {
-    user, err := sociable.Driver("github").User(w, r)
+http.HandleFunc("/auth/google/callback", func(w http.ResponseWriter, r *http.Request) {
+    user, err := social.Driver("google").User(w, r)
     if err != nil {
         http.Error(w, "sign-in failed", http.StatusBadRequest)
         return
@@ -29,175 +30,130 @@ http.HandleFunc("/auth/github/callback", func(w http.ResponseWriter, r *http.Req
     user.ID, user.Nickname, user.Name, user.Email, user.EmailVerified, user.Avatar
     user.Token.AccessToken, user.Token.RefreshToken, user.Token.Expiry
     user.ApprovedScopes
-    user.Raw
 })
 ```
 
 ## Configuration
 
-| Field | |
+| Option | |
 |---|---|
-| `Key` | encrypts the cookie that carries the handshake between redirect and callback. Any string. |
-| `URL` | the application's own URL, for a `Redirect` given as a path. |
-| `Drivers` | a name to its `ClientID`, `ClientSecret`, `Redirect` and optional `Scopes`. |
-| `Session` | an application's own session, instead of the cookie. `Key` is then not needed. |
-| `Client` | the HTTP client used to talk to providers. |
+| `WithKey` | encrypts the cookie that carries the handshake between redirect and callback. Any string. |
+| `WithSession` | an application's own session, instead of the cookie. `WithKey` is then not needed. |
+| `WithAPIURL` | the application's own URL. A `RedirectURL` given as a path is resolved against it, and `https://` marks the cookie Secure behind a proxy. |
+| `WithDriver[Provider]` | registers a provider type under a name, with its `ClientID`, `ClientSecret`, `RedirectURL` and, for a self-hosted provider, `BaseURL`. |
 
-`Redirect` is a full URL, or a path resolved against `URL`.
+`APP_KEY` and `API_URL` are read from the environment when the option is not given.
 
 ## Shaping the redirect
 
-All optional, all chainable:
+All optional, all chainable, the same names as Socialite:
 
 ```go
-sociable.Driver("google").
-    Scopes("https://www.googleapis.com/auth/drive.readonly").   // adds to the driver's
-    With(map[string]string{"access_type": "offline", "prompt": "consent"}).
+social.Driver("google").
+    Scopes("https://www.googleapis.com/auth/drive.readonly").              // adds to the provider's
+    With(map[string]string{"access_type": "offline", "prompt": "consent"}). // extra auth URL parameters
     Redirect(w, r)
 
-sociable.Driver("google").SetScopes("openid", "email").Redirect(w, r)  // replaces them
-sociable.Driver("github").RedirectURL("https://other.example/cb").Redirect(w, r)
+social.Driver("google").SetScopes("openid", "email").Redirect(w, r)      // replaces them
+social.Driver("google").RedirectURL("https://other.example/cb").Redirect(w, r)
+social.Driver("google").Stateless().Redirect(w, r)                       // no session, no state check
 ```
-
-`WithState` carries values through the flow. They come back on `user.State`
-at the callback and never travel through the provider:
-
-```go
-sociable.Driver("github").WithState(map[string]string{"invite": code}).Redirect(w, r)
-
-user, _ := sociable.Driver("github").User(w, r)
-user.State["invite"]
-```
-
-`AuthURL(w, r)` is `Redirect` without the redirecting, for a handler that
-sends the browser itself.
 
 ## Tokens
 
 ```go
-user, err := sociable.Driver("github").UserFromToken(ctx, token)          // a token you already hold
-token, err := sociable.Driver("google").RefreshToken(ctx, refreshToken)   // a live one; persist what comes back
-client := sociable.Driver("google").Client(ctx, token)                    // an *http.Client that presents and refreshes it
+user, err := social.Driver("google").UserFromToken(ctx, token)        // a token you already hold
+token, err := social.Driver("google").RefreshToken(ctx, refreshToken) // a live one; persist what comes back
 ```
-
-`Stateless()` runs a callback this server did not start, for a native app
-that brings its own code.
 
 ## Errors
 
 ```go
-user, err := sociable.Driver("github").User(w, r)
+user, err := social.Driver("google").User(w, r)
 
 switch {
-case errors.Is(err, sociable.ErrAccessDenied):   // the person said no
-case errors.Is(err, sociable.ErrInvalidState):   // not started here, already used, or expired
-case errors.Is(err, sociable.ErrUnknownDriver):
-case errors.Is(err, sociable.ErrNotConfigured):
-case err != nil:                                 // the provider refused, the exchange failed, the id token did not verify
+case errors.Is(err, sociable.ErrAccessDenied):  // the person said no
+case errors.Is(err, sociable.ErrInvalidState):  // not started here, already used, or tampered with
+case errors.Is(err, sociable.ErrUnknownDriver): // no driver configured under that name
+case errors.Is(err, sociable.ErrIDToken):       // the OpenID Connect id token did not verify
+case err != nil:                                // the provider refused, the exchange or the profile failed
 }
 ```
 
 Every provider refusal matches `ErrAuthorization` and carries the provider's
-words as an `*AuthorizationError`. A failed ID token is `ErrIDToken`, a
-failed exchange `ErrExchange`, a profile that would not load `ErrProfile`.
+words as an `*AuthorizationError`.
 
 ## Your own provider
 
-Any OpenID Connect provider is its issuer:
+A provider is its endpoints, its scopes, and how it reads the person behind
+a token. The client it gets already presents the token.
 
 ```go
-sociable.Extend("okta", func(c sociable.Credentials) sociable.Provider {
-    return sociable.OpenID(c, "https://acme.okta.com")
-})
+type Acme struct{}
+
+func (Acme) Endpoint(c sociable.Credentials) oauth2.Endpoint {
+    return oauth2.Endpoint{AuthURL: c.BaseURL + "/oauth/authorize", TokenURL: c.BaseURL + "/oauth/token"}
+}
+
+func (Acme) Scoping() sociable.Scoping {
+    return sociable.Scoping{Scopes: []string{"profile", "email"}, Separator: " "}
+}
+
+func (Acme) GetUserByToken(ctx context.Context, client *http.Client, token *oauth2.Token, c sociable.Credentials) (*fastjson.Value, error) {
+    response, err := client.Get(c.BaseURL + "/oauth/userinfo")
+    // ... read the body, fastjson.ParseBytes
+}
+
+func (Acme) MapUserToStruct(json *fastjson.Value) (*sociable.User, error) {
+    return &sociable.User{ID: string(json.GetStringBytes("sub")), Email: string(json.GetStringBytes("email"))}, nil
+}
 ```
 
-Any OAuth 2 provider is its endpoints and a mapping:
+The provider is a zero value: what it needs to know, an issuer or a host,
+comes in through `Credentials.BaseURL`.
+
+Optional, when it applies:
 
 ```go
-sociable.Extend("acme", func(c sociable.Credentials) sociable.Provider {
-    return sociable.OAuth2{
-        Credentials: c,
-        Endpoint:    oauth2.Endpoint{AuthURL: base + "/oauth/authorize", TokenURL: base + "/oauth/token"},
-        Scopes:      []string{"profile", "email"},
-        ProfileURL:  base + "/oauth/userinfo",
-        Map: func(raw map[string]any) sociable.User {
-            return sociable.User{ID: sociable.String(raw, "sub"), Name: sociable.String(raw, "name"), Email: sociable.String(raw, "email")}
-        },
-    }
-})
+func (Acme) Issuer() string { return "https://acme.example" } // OpenID Connect: the id token is verified
+func (Acme) UsesPKCE() bool { return false }                  // a provider that cannot do PKCE
 ```
 
 Then it is configured and used like a built-in:
 
 ```go
-"acme": {ClientID: id, ClientSecret: secret, Redirect: "/auth/acme/callback"},
-sociable.Driver("acme").Redirect(w, r)
+sociable.WithDriver[Acme]("acme", sociable.Credentials{BaseURL: "https://acme.example", ...})
+social.Driver("acme").Redirect(w, r)
 ```
-
-A provider with more to read than one document implements `User` itself.
-It gets an `*http.Client` that already presents the token:
-
-```go
-func (self github) User(ctx context.Context, client *http.Client, token *oauth2.Token) (*sociable.User, error) {
-    user, err := self.OAuth2.User(ctx, client, token)
-    if err != nil || user.Email != "" {
-        return user, err
-    }
-
-    var emails []email
-    if err := sociable.GetJSON(ctx, client, "https://api.github.com/user/emails", &emails); err != nil {
-        return nil, err
-    }
-    // ...
-}
-```
-
-A provider that is not OAuth at all, a login widget for instance, implements
-`Redirect(w, r, callback, state)` and `Callback(r)` itself and the flow gets
-out of the way. The state check still runs.
 
 ## Tests
 
 `Fake` swaps a driver for one that returns the user you give it, the way
-`Socialite::fake` does. Fields you leave blank get a test person's values,
-the same ones as Socialite's fake user. Nothing else needs configuring,
-nothing talks to a provider, and a test drives the callback directly:
+`Socialite::fake` does. A test makes a manager of its own and hands it to
+the application, so nothing needs configuring, nothing talks to a provider,
+and tests run in parallel:
 
 ```go
-fake := sociable.Fake("github", sociable.User{Email: "arjen@example.test"})
-t.Cleanup(fake.Restore)
+social := sociable.New()
+social.Fake("github", &sociable.User{ID: "github-123", Email: "jason@example.com"})
 
 recorder := httptest.NewRecorder()
-app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/auth/github/callback", nil))
+App(social).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/auth/github/callback", nil))
 
 if recorder.Header().Get("Location") != "/dashboard" {
     t.Fatalf("landed on %s", recorder.Header().Get("Location"))
 }
 ```
 
-What `Fake` returns records every redirect the handler asked for, so a
-test of the redirect side can check how the person was sent off:
-
-```go
-fake := sociable.Fake("google", sociable.User{})
-
-app.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/connect/drive", nil))
-
-fake.AssertRedirected(t, func(r sociable.Redirect) bool {
-    return slices.Contains(r.Scopes, "https://www.googleapis.com/auth/drive.readonly")
-})
-```
-
-`AssertNotRedirected`, `AssertRedirectedCount` and `Redirects` go with it.
+`Fake("github")` without a user makes the redirect go to a URL nobody
+serves, for testing the redirect side.
 
 ## What is on by default
 
 PKCE on every request, a nonce and a verified ID token for every OpenID
-Connect provider, state compared in constant time, a handshake that expires
-and is spent whether the callback succeeds or not. None of it needs
-mentioning at the call site.
+Connect provider, state compared in constant time, and a handshake that
+expires after ten minutes and is spent whether the callback succeeds or
+not. None of it needs mentioning at the call site.
 
 Built on [golang.org/x/oauth2](https://pkg.go.dev/golang.org/x/oauth2) for
 the protocol and [go-oidc](https://github.com/coreos/go-oidc) for ID tokens.
-Every request to a provider, the exchange included, goes through `Client`,
-so a traced transport there traces all of it.

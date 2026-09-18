@@ -1,107 +1,55 @@
 package sociable
 
 import (
-	"fmt"
-	"slices"
-	"sync"
-	"testing"
+	"context"
+	"net/http"
+
+	"golang.org/x/oauth2"
 )
 
-// Faked is a faked driver: the user it answers with, and every redirect it
-// was asked for, so a test can check what the handler sent the person off
-// with.
-type Faked struct {
-	manager *Manager
-	driver  string
-	user    User
+// fakeDriver is what Fake swaps in: Socialite's FakeProvider. It answers
+// Redirect and User itself and hands everything else to the driver it
+// replaced.
+type fakeDriver struct {
+	name string
+	user *User
 
-	mutex     sync.Mutex
-	redirects []Redirect
+	// driver is the one this fake replaced. An unknown name wraps an empty
+	// driver, so a test needs no credentials.
+	driver DriverContract
 }
 
-// Redirect is one call to Redirect or AuthURL on a faked driver, as the
-// handler shaped it.
-type Redirect struct {
-	Scopes      []string
-	Params      map[string]string
-	State       map[string]string
-	RedirectURL string
+// Redirect is a 302 to a URL nobody serves. No session, no state, no PKCE.
+func (self fakeDriver) Redirect(w http.ResponseWriter, r *http.Request) error {
+	http.Redirect(w, r, "https://sociable.fake/"+self.name+"/authorize", http.StatusFound)
+	return nil
 }
 
-// Restore puts the real driver back. Register it with t.Cleanup so a fake on
-// the default manager does not outlive its test.
-func (self *Faked) Restore() {
-	self.manager.restore(self.driver, self)
-}
-
-// Redirects are the redirects so far, oldest first.
-func (self *Faked) Redirects() []Redirect {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	return slices.Clone(self.redirects)
-}
-
-// AssertRedirected fails the test unless a redirect happened that every
-// condition accepts.
-func (self *Faked) AssertRedirected(t testing.TB, conditions ...func(Redirect) bool) {
-	t.Helper()
-
-	for _, redirect := range self.Redirects() {
-		if accepted(redirect, conditions) {
-			return
-		}
+// User is the user Fake was given. Nothing on the request is read.
+func (self fakeDriver) User(w http.ResponseWriter, r *http.Request) (*User, error) {
+	if self.user != nil {
+		return self.user, nil
 	}
 
-	t.Errorf("sociable: %s was not redirected to as expected; redirects: %s", self.driver, self.describe())
+	return self.driver.User(w, r)
 }
 
-// AssertNotRedirected fails the test if a redirect happened that every
-// condition accepts. With no conditions, any redirect fails it.
-func (self *Faked) AssertNotRedirected(t testing.TB, conditions ...func(Redirect) bool) {
-	t.Helper()
-
-	for _, redirect := range self.Redirects() {
-		if accepted(redirect, conditions) {
-			t.Errorf("sociable: %s was redirected to: %+v", self.driver, redirect)
-
-			return
-		}
-	}
+func (self fakeDriver) Callback(w http.ResponseWriter, r *http.Request) (*oauth2.Token, error) {
+	return self.driver.Callback(w, r)
 }
 
-// AssertRedirectedCount fails the test unless exactly count redirects
-// happened.
-func (self *Faked) AssertRedirectedCount(t testing.TB, count int) {
-	t.Helper()
-
-	if got := len(self.Redirects()); got != count {
-		t.Errorf("sociable: %s was redirected to %d times, want %d", self.driver, got, count)
-	}
+func (self fakeDriver) UserFromToken(ctx context.Context, token *oauth2.Token) (*User, error) {
+	return self.driver.UserFromToken(ctx, token)
 }
 
-func (self *Faked) record(redirect Redirect) {
-	self.mutex.Lock()
-	defer self.mutex.Unlock()
-
-	self.redirects = append(self.redirects, redirect)
+func (self fakeDriver) RefreshToken(ctx context.Context, refresh string) (*oauth2.Token, error) {
+	return self.driver.RefreshToken(ctx, refresh)
 }
 
-func (self *Faked) describe() string {
-	redirects := self.Redirects()
-	if len(redirects) == 0 {
-		return "none"
-	}
-
-	return fmt.Sprintf("%+v", redirects)
-}
-
-func accepted(redirect Redirect, conditions []func(Redirect) bool) bool {
-	for _, condition := range conditions {
-		if !condition(redirect) {
-			return false
-		}
-	}
-
-	return true
-}
+// The chain returns the fake itself, so Driver("x").Scopes(...).Redirect(...)
+// stays faked.
+func (self fakeDriver) Scopes(...string) DriverContract       { return self }
+func (self fakeDriver) SetScopes(...string) DriverContract    { return self }
+func (self fakeDriver) With(map[string]string) DriverContract { return self }
+func (self fakeDriver) RedirectURL(string) DriverContract     { return self }
+func (self fakeDriver) Stateless() DriverContract             { return self }

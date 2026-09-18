@@ -1,137 +1,75 @@
-package sociable_test
+package sociable
 
 import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"slices"
-	"sync"
 	"testing"
-
-	"github.com/gonstruct/sociable"
 )
 
-func TestTheDefaultManager(t *testing.T) {
-	sociable.Configure(sociable.Config{
-		Key: "test",
-		URL: "https://app.test",
-		Drivers: sociable.Drivers{
-			"github": {ClientID: "id", ClientSecret: "s", Redirect: "/auth/github/callback"},
-		},
-	})
+func TestNewReadsTheEnvironment(t *testing.T) {
+	t.Setenv("APP_KEY", "from-env")
+	t.Setenv("API_URL", "https://env.example")
 
-	recorder := httptest.NewRecorder()
+	m := New()
 
-	authURL, err := sociable.Driver("github").AuthURL(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if err != nil {
-		t.Fatal(err)
+	if m.config.Key != "from-env" || m.config.APIURL != "https://env.example" {
+		t.Errorf("config = %+v", m.config)
 	}
 
-	parsed := mustParse(authURL)
-	if parsed.Host != "github.com" || parsed.Query().Get("redirect_uri") != "https://app.test/auth/github/callback" {
-		t.Errorf("url = %s", authURL)
-	}
+	m = New(WithKey("from-option"), WithAPIURL("https://option.example"))
 
-	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "sociable" || !cookies[0].HttpOnly || !cookies[0].Secure {
-		t.Errorf("cookies = %+v", cookies)
-	}
-
-	if err := sociable.Driver("nope").Redirect(recorder, httptest.NewRequest(http.MethodGet, "/", nil)); !errors.Is(err, sociable.ErrUnknownDriver) {
-		t.Errorf("err = %v", err)
+	if m.config.Key != "from-option" || m.config.APIURL != "https://option.example" {
+		t.Errorf("options did not win: %+v", m.config)
 	}
 }
 
-// A fake needs no configuration at all, the way Socialite::fake needs none.
-func TestFakeNeedsNoConfiguration(t *testing.T) {
-	var auth sociable.Manager
+func TestConfigureStartsOver(t *testing.T) {
+	t.Parallel()
 
-	fake := auth.Fake("google", sociable.User{ID: "1"})
+	session := &memorySession{values: map[string]string{}}
+	m := New(WithKey("k"), WithSession(session), WithDriver[stub]("stub", Credentials{}))
 
-	recorder := httptest.NewRecorder()
-	err := auth.Driver("google").
-		Scopes("https://www.googleapis.com/auth/drive.readonly").
-		WithState(map[string]string{"invite": "abc"}).
-		Redirect(recorder, httptest.NewRequest(http.MethodGet, "/auth/google", nil))
-	if err != nil {
-		t.Fatal(err)
+	if m.config.Session != session {
+		t.Error("session not set")
 	}
 
-	fake.AssertRedirected(t, func(r sociable.Redirect) bool {
-		return slices.Contains(r.Scopes, "https://www.googleapis.com/auth/drive.readonly") && r.State["invite"] == "abc"
-	})
-	fake.AssertNotRedirected(t, func(r sociable.Redirect) bool { return r.Params["prompt"] == "consent" })
-	fake.AssertRedirectedCount(t, 1)
-
-	user, err := auth.Driver("google").User(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/auth/google/callback", nil))
-	if err != nil {
-		t.Fatal(err)
+	if _, ok := m.config.Drivers["stub"]; !ok {
+		t.Error("driver not registered")
 	}
 
-	// What was given stays; what was not gets Socialite's fake user's values.
-	if user.ID != "1" || user.Name != "Test User" || user.Email != "test@example.com" || user.Token.AccessToken != "fake-token" {
-		t.Errorf("user = %+v", user)
+	m.Configure(WithKey("other"))
+
+	if m.config.Key != "other" || m.config.Session != nil || len(m.config.Drivers) != 0 {
+		t.Errorf("not from scratch: %+v", m.config)
 	}
 }
 
-func TestDriversAreBuiltOnceUnderConcurrency(t *testing.T) {
-	auth, err := sociable.New(sociable.Config{
-		Key:     "k",
-		URL:     "https://app.test",
-		Drivers: sociable.Drivers{"github": {ClientID: "id", ClientSecret: "s", Redirect: "/cb"}},
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestUnknownDriver(t *testing.T) {
+	t.Parallel()
+
+	m := New(WithKey("k"))
+	w, r := httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil)
+
+	if err := m.Driver("nope").Redirect(w, r); !errors.Is(err, ErrUnknownDriver) {
+		t.Errorf("Redirect: %v", err)
 	}
 
-	var wait sync.WaitGroup
-	for range 32 {
-		wait.Go(func() {
-			if _, err := auth.Driver("github").AuthURL(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil)); err != nil {
-				t.Error(err)
-			}
-		})
-	}
-	wait.Wait()
-}
-
-func TestAFakeAnswersEveryCall(t *testing.T) {
-	var auth sociable.Manager
-
-	fake := auth.Fake("google", sociable.User{State: map[string]string{"user_id": "7"}})
-
-	user, err := auth.Driver("google").User(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/cb", nil))
-	if err != nil || user.State["user_id"] != "7" {
-		t.Fatalf("user = %+v, err = %v", user, err)
+	if _, err := m.Driver("nope").User(w, r); !errors.Is(err, ErrUnknownDriver) {
+		t.Errorf("User: %v", err)
 	}
 
-	token, err := auth.Driver("google").RefreshToken(t.Context(), "r")
-	if err != nil || token.AccessToken != "fake-token" {
-		t.Errorf("token = %+v, err = %v", token, err)
+	if _, err := m.Driver("nope").UserFromToken(t.Context(), nil); !errors.Is(err, ErrUnknownDriver) {
+		t.Errorf("UserFromToken: %v", err)
 	}
 
-	if client := auth.Driver("google").Client(t.Context(), token); client == nil {
-		t.Error("no client")
+	if _, err := m.Driver("nope").RefreshToken(t.Context(), "r"); !errors.Is(err, ErrUnknownDriver) {
+		t.Errorf("RefreshToken: %v", err)
 	}
 
-	fake.Restore()
-
-	if err := auth.Driver("google").Redirect(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil)); !errors.Is(err, sociable.ErrUnknownDriver) {
-		t.Errorf("after restore err = %v", err)
-	}
-}
-
-func TestARelativeRedirectNeedsTheApplicationURL(t *testing.T) {
-	auth, err := sociable.New(sociable.Config{
-		Key:     "k",
-		Drivers: sociable.Drivers{"github": {ClientID: "id", ClientSecret: "s", Redirect: "/cb"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = auth.Driver("github").AuthURL(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-	if !errors.Is(err, sociable.ErrNotConfigured) {
-		t.Errorf("err = %v", err)
+	// The chain must not panic on a driver that has no provider.
+	err := m.Driver("nope").Scopes("x").SetScopes("y").With(map[string]string{"a": "b"}).RedirectURL("/x").Stateless().Redirect(w, r)
+	if !errors.Is(err, ErrUnknownDriver) {
+		t.Errorf("chained Redirect: %v", err)
 	}
 }
