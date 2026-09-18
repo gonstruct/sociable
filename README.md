@@ -40,6 +40,7 @@ http.HandleFunc("/auth/google/callback", func(w http.ResponseWriter, r *http.Req
 | `WithKey` | encrypts the cookie that carries the handshake between redirect and callback. Any string. |
 | `WithSession` | an application's own session, instead of the cookie. `WithKey` is then not needed. |
 | `WithAPIURL` | the application's own URL. A `RedirectURL` given as a path is resolved against it, and `https://` marks the cookie Secure behind a proxy. |
+| `WithClient` | the HTTP client every call to a provider goes through: the exchange, the refresh, the profile and discovery. A traced transport there traces all of it. |
 | `WithDriver[Provider]` | registers a provider type under a name, with its `ClientID`, `ClientSecret`, `RedirectURL` and, for a self-hosted provider, `BaseURL`. |
 
 `APP_KEY` and `API_URL` are read from the environment when the option is not given.
@@ -59,6 +60,9 @@ social.Driver("google").RedirectURL("https://other.example/cb").Redirect(w, r)
 social.Driver("google").Stateless().Redirect(w, r)                       // no session, no state check
 ```
 
+`AuthURL(w, r)` is `Redirect` without the redirecting, for a handler that
+sends the browser itself. It still starts the handshake.
+
 ## Tokens
 
 ```go
@@ -75,6 +79,7 @@ switch {
 case errors.Is(err, sociable.ErrAccessDenied):  // the person said no
 case errors.Is(err, sociable.ErrInvalidState):  // not started here, already used, or tampered with
 case errors.Is(err, sociable.ErrUnknownDriver): // no driver configured under that name
+case errors.Is(err, sociable.ErrDriverNotConfigured): // no credentials, endpoints or redirect URL
 case errors.Is(err, sociable.ErrIDToken):       // the OpenID Connect id token did not verify
 case err != nil:                                // the provider refused, the exchange or the profile failed
 }

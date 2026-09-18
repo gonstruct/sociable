@@ -317,3 +317,15 @@ func (self *memorySession) Pull(_ http.ResponseWriter, _ *http.Request, key stri
 
 	return value, nil
 }
+
+// parse is the query of an auth URL.
+func parse(t *testing.T, raw string) url.Values {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return parsed.Query()
+}

@@ -29,8 +29,24 @@ const (
 // sends along are kept in the session, so the callback can check what came
 // back and finish the exchange.
 func (self driver) Redirect(w http.ResponseWriter, r *http.Request) error {
+	url, err := self.AuthURL(w, r)
+	if err != nil {
+		return err
+	}
+
+	http.Redirect(w, r, url, http.StatusFound)
+	return nil
+}
+
+// AuthURL is Redirect without the redirecting, for a handler that sends the
+// browser itself. It still starts the handshake for this browser.
+func (self driver) AuthURL(w http.ResponseWriter, r *http.Request) (string, error) {
 	if self.name == "" {
-		return ErrUnknownDriver
+		return "", ErrUnknownDriver
+	}
+
+	if err := self.configured(); err != nil {
+		return "", err
 	}
 
 	config := self.config()
@@ -65,12 +81,11 @@ func (self driver) Redirect(w http.ResponseWriter, r *http.Request) error {
 
 	if !self.stateless {
 		if err := self.remember(w, r, issued); err != nil {
-			return err
+			return "", err
 		}
 	}
 
-	http.Redirect(w, r, config.AuthCodeURL(issued.State, options...), http.StatusFound)
-	return nil
+	return config.AuthCodeURL(issued.State, options...), nil
 }
 
 func (self driver) remember(w http.ResponseWriter, r *http.Request, issued handshake) error {
