@@ -21,8 +21,14 @@ type fakeDriver struct {
 
 // Redirect is a 302 to a URL nobody serves. No session, no state, no PKCE.
 func (self fakeDriver) Redirect(w http.ResponseWriter, r *http.Request) error {
-	http.Redirect(w, r, "https://sociable.fake/"+self.name+"/authorize", http.StatusFound)
+	url, _ := self.AuthURL(w, r)
+	http.Redirect(w, r, url, http.StatusFound)
 	return nil
+}
+
+// AuthURL is the URL Redirect goes to.
+func (self fakeDriver) AuthURL(http.ResponseWriter, *http.Request) (string, error) {
+	return "https://sociable.fake/" + self.name + "/authorize", nil
 }
 
 // User is the user Fake was given. Nothing on the request is read.

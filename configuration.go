@@ -1,6 +1,9 @@
 package sociable
 
-import "os"
+import (
+	"net/http"
+	"os"
+)
 
 type config struct {
 	Key string
@@ -12,6 +15,10 @@ type config struct {
 
 	// Session holds the handshake. nil is a cookie encrypted under Key.
 	Session Session
+
+	// Client talks to the providers: the exchange, the refresh, the profile
+	// and discovery all go through it. nil is http.DefaultClient.
+	Client *http.Client
 
 	Drivers map[string]DriverContract
 }
@@ -35,6 +42,14 @@ func WithKey(key string) option {
 func WithSession(session Session) option {
 	return func(m *Manager) {
 		m.config.Session = session
+	}
+}
+
+// WithClient sets the HTTP client every call to a provider goes through, so
+// a traced or timed-out transport there covers all of them.
+func WithClient(client *http.Client) option {
+	return func(m *Manager) {
+		m.config.Client = client
 	}
 }
 

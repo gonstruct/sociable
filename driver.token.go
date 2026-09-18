@@ -24,7 +24,11 @@ func (self driver) RefreshToken(ctx context.Context, refreshToken string) (*oaut
 		return nil, ErrUnknownDriver
 	}
 
-	token, err := self.config().TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
+	if err := self.configured(); err != nil {
+		return nil, err
+	}
+
+	token, err := self.config().TokenSource(self.outbound(ctx), &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrExchange, err)
 	}

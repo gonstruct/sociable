@@ -40,6 +40,8 @@ func (self driver) User(w http.ResponseWriter, r *http.Request) (*User, error) {
 // the token attached. The client presents the token and refreshes it when
 // it can.
 func (self driver) userFor(ctx context.Context, token *oauth2.Token) (*User, error) {
+	ctx = self.outbound(ctx)
+
 	raw, err := self.provider.GetUserByToken(ctx, self.config().Client(ctx, token), token, self.credentials)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrProfile, err)
@@ -58,6 +60,10 @@ func (self driver) userFor(ctx context.Context, token *oauth2.Token) (*User, err
 // checked against the query, a refusal reported, and the code exchanged for
 // a token.
 func (self driver) Callback(w http.ResponseWriter, r *http.Request) (*oauth2.Token, error) {
+	if err := self.configured(); err != nil {
+		return nil, err
+	}
+
 	issued, err := self.recall(w, r)
 	if err != nil {
 		return nil, err
@@ -78,7 +84,9 @@ func (self driver) Callback(w http.ResponseWriter, r *http.Request) (*oauth2.Tok
 		options = append(options, oauth2.VerifierOption(issued.Verifier))
 	}
 
-	token, err := self.config().Exchange(r.Context(), query.Get("code"), options...)
+	ctx := self.outbound(r.Context())
+
+	token, err := self.config().Exchange(ctx, query.Get("code"), options...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrExchange, err)
 	}
@@ -86,7 +94,7 @@ func (self driver) Callback(w http.ResponseWriter, r *http.Request) (*oauth2.Tok
 	// An ID token comes only with an OpenID Connect request, which is what
 	// asking for openid makes it.
 	if issuer, ok := self.provider.(openIDProvider); ok && slices.Contains(self.scoped(), "openid") {
-		if err := self.verifyIDToken(r.Context(), issuer.Issuer(), token, issued.Nonce); err != nil {
+		if err := self.verifyIDToken(ctx, issuer.Issuer(), token, issued.Nonce); err != nil {
 			return nil, err
 		}
 	}

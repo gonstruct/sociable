@@ -27,6 +27,11 @@ func TestFakeRedirectsNowhere(t *testing.T) {
 	if len(recorder.Result().Cookies()) != 0 {
 		t.Error("a handshake was stored")
 	}
+
+	url, err := m.Driver("github").AuthURL(recorder, httptest.NewRequest(http.MethodGet, "/auth", nil))
+	if err != nil || url != "https://sociable.fake/github/authorize" {
+		t.Errorf("AuthURL = %q, %v", url, err)
+	}
 }
 
 func TestFakeAnswersTheCallback(t *testing.T) {

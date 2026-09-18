@@ -6,7 +6,10 @@ import (
 )
 
 var (
-	ErrUnknownDriver       = errors.New("sociable: unknown driver")
+	ErrUnknownDriver = errors.New("sociable: unknown driver")
+
+	// ErrDriverNotConfigured means the driver has no client id, no endpoints
+	// or no redirect URL. Refuse the route rather than redirect.
 	ErrDriverNotConfigured = errors.New("sociable: driver not configured")
 
 	ErrMissingKeyOrSession = errors.New("sociable: a Key or a Session is required")
